@@ -80,6 +80,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 active: true,
             },
             ConfigOption {
+                name: "place-uart-driver-in-ram",
+                description: "Places the UART driver in RAM for better performance",
+                default_value: Value::Bool(false),
+                constraint: None,
+                stability: Stability::Unstable,
+                active: true,
+            },
+            ConfigOption {
                 name: "place-switch-tables-in-ram",
                 description: "Places switch-tables, some lookup tables and constants related to \
                 interrupt handling into RAM - resulting in better performance but slightly more \

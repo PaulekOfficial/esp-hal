@@ -47,7 +47,7 @@ use core::{marker::PhantomData, sync::atomic::Ordering, task::Poll};
 use embedded_io::ReadExactError;
 use enumset::{EnumSet, EnumSetType};
 use portable_atomic::AtomicBool;
-
+use procmacros::ram;
 use crate::{
     Async,
     Blocking,
@@ -621,6 +621,7 @@ impl<'d> UartTx<'d, Async> {
     /// ## Cancellation
     ///
     /// This function is cancellation safe.
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn write_async(&mut self, bytes: &[u8]) -> Result<usize, TxError> {
         // We need to loop in case the TX empty interrupt was fired but not cleared
         // before, but the FIFO itself was filled up by a previous write.
@@ -655,6 +656,7 @@ impl<'d> UartTx<'d, Async> {
     /// ## Cancellation
     ///
     /// This function is cancellation safe.
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn flush_async(&mut self) -> Result<(), TxError> {
         // Nothing is guaranteed to clear the Done status, so let's loop here in case Tx
         // was Done before the last write operation that pushed data into the
@@ -743,6 +745,7 @@ where
     /// This function returns a [`TxError`] if an error occurred during the
     /// write operation.
     #[instability::unstable]
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn write(&mut self, data: &[u8]) -> Result<usize, TxError> {
         self.uart.info().write(data)
     }
@@ -752,12 +755,14 @@ where
     /// This function blocks until all data in the TX FIFO has been
     /// transmitted.
     #[instability::unstable]
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn flush(&mut self) -> Result<(), TxError> {
         while self.uart.info().tx_fifo_count() > 0 {}
         self.flush_last_byte();
         Ok(())
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn flush_last_byte(&mut self) {
         // This function handles an edge case that happens when the TX FIFO count
         // changes to 0. The FSM is in the Idle state for a short while after
@@ -889,6 +894,7 @@ impl<'d> UartRx<'d, Async> {
         }
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     async fn wait_for_buffered_data(
         &mut self,
         minimum: usize,
@@ -968,6 +974,7 @@ impl<'d> UartRx<'d, Async> {
     /// ## Cancellation
     ///
     /// This function is cancellation safe.
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn read_async(&mut self, buf: &mut [u8]) -> Result<usize, RxError> {
         if buf.is_empty() {
             return Ok(0);
@@ -992,6 +999,7 @@ impl<'d> UartRx<'d, Async> {
     /// This function is **not** cancellation safe. If the future is dropped
     /// before it resolves, or if an error occurs during the read operation,
     /// previously read data may be lost.
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn read_exact_async(&mut self, mut buf: &mut [u8]) -> Result<(), RxError> {
         while !buf.is_empty() {
             // No point in listening for timeouts, as we're waiting for an exact amount of
@@ -1105,6 +1113,7 @@ where
     /// If the error occurred before this function was called, the contents of
     /// the FIFO are not modified.
     #[instability::unstable]
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, RxError> {
         self.uart.info().read(buf)
     }
@@ -1127,6 +1136,7 @@ where
     /// If the error occurred before this function was called, the contents of
     /// the FIFO are not modified.
     #[instability::unstable]
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn read_buffered(&mut self, buf: &mut [u8]) -> Result<usize, RxError> {
         self.uart.info().read_buffered(buf)
     }
@@ -1319,6 +1329,7 @@ impl<'d> Uart<'d, Async> {
     /// ## Cancellation
     ///
     /// This function is cancellation safe.
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn write_async(&mut self, words: &[u8]) -> Result<usize, TxError> {
         self.tx.write_async(words).await
     }
@@ -1332,6 +1343,7 @@ impl<'d> Uart<'d, Async> {
     /// ## Cancellation
     ///
     /// This function is cancellation safe.
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn flush_async(&mut self) -> Result<(), TxError> {
         self.tx.flush_async().await
     }
@@ -1354,6 +1366,7 @@ impl<'d> Uart<'d, Async> {
     /// ## Cancellation
     ///
     /// This function is cancellation safe.
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn read_async(&mut self, buf: &mut [u8]) -> Result<usize, RxError> {
         self.rx.read_async(buf).await
     }
@@ -1373,6 +1386,7 @@ impl<'d> Uart<'d, Async> {
     /// before it resolves, or if an error occurs during the read operation,
     /// previously read data may be lost.
     #[instability::unstable]
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn read_exact_async(&mut self, buf: &mut [u8]) -> Result<(), RxError> {
         self.rx.read_exact_async(buf).await
     }
@@ -1474,11 +1488,13 @@ where
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn write(&mut self, data: &[u8]) -> Result<usize, TxError> {
         self.tx.write(data)
     }
 
     /// Flush the transmit buffer of the UART
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn flush(&mut self) -> Result<(), TxError> {
         self.tx.flush()
     }
@@ -1487,6 +1503,7 @@ where
     ///
     /// If this function returns `true`, [`Self::read`] will not block.
     #[instability::unstable]
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn read_ready(&mut self) -> bool {
         self.rx.read_ready()
     }
@@ -1508,6 +1525,7 @@ where
     ///
     /// If the error occurred before this function was called, the contents of
     /// the FIFO are not modified.
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, RxError> {
         self.rx.read(buf)
     }
@@ -1580,6 +1598,7 @@ where
     /// If the error occurred before this function was called, the contents of
     /// the FIFO are not modified.
     #[instability::unstable]
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn read_buffered(&mut self, buf: &mut [u8]) -> Result<usize, RxError> {
         self.rx.read_buffered(buf)
     }
@@ -3011,6 +3030,7 @@ impl Info {
         }
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn write(&self, data: &[u8]) -> Result<usize, TxError> {
         if data.is_empty() {
             return Ok(0);
@@ -3027,6 +3047,7 @@ impl Info {
         Ok(to_write)
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn read(&self, buf: &mut [u8]) -> Result<usize, RxError> {
         if buf.is_empty() {
             return Ok(0);
@@ -3040,6 +3061,7 @@ impl Info {
         self.read_buffered(buf)
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn read_buffered(&self, buf: &mut [u8]) -> Result<usize, RxError> {
         // Get the count first, to avoid accidentally reading a corrupted byte received
         // after the error check.
