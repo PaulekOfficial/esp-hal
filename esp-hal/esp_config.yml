@@ -1,6 +1,11 @@
 crate: esp-hal
 
 options:
+- name: place-uart-driver-in-ram
+  description: Places the UART driver in RAM for better performance
+  default:
+    - value: false
+
 - name: place-spi-master-driver-in-ram
   description: Places the SPI master driver in RAM for better performance
   default:
