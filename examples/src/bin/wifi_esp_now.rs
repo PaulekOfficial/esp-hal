@@ -13,7 +13,6 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
     main,
-    rng::Rng,
     time::{self, Duration},
     timer::timg::TimerGroup,
 };
@@ -22,6 +21,8 @@ use esp_wifi::{
     esp_now::{BROADCAST_ADDRESS, PeerInfo},
     init,
 };
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[main]
 fn main() -> ! {
@@ -33,12 +34,7 @@ fn main() -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let esp_wifi_ctrl = init(
-        timg0.timer0,
-        Rng::new(peripherals.RNG),
-        peripherals.RADIO_CLK,
-    )
-    .unwrap();
+    let esp_wifi_ctrl = init(timg0.timer0).unwrap();
 
     let wifi = peripherals.WIFI;
     let (mut controller, interfaces) = esp_wifi::wifi::new(&esp_wifi_ctrl, wifi).unwrap();

@@ -1,3 +1,9 @@
+#![cfg_attr(docsrs, procmacros::doc_replace(
+    "dma_channel" => {
+        cfg(any(esp32, esp32s2)) => "let dma_channel = peripherals.DMA_SPI2;",
+        _ => "let dma_channel = peripherals.DMA_CH0;"
+    },
+))]
 //! # Serial Peripheral Interface - Slave Mode
 //!
 //! ## Overview
@@ -14,49 +20,42 @@
 //! ### SPI Slave with DMA
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::dma_buffers;
 //! # use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
 //! # use esp_hal::spi::Mode;
 //! # use esp_hal::spi::slave::Spi;
-#![cfg_attr(pdma, doc = "let dma_channel = peripherals.DMA_SPI2;")]
-#![cfg_attr(gdma, doc = "let dma_channel = peripherals.DMA_CH0;")]
+//! # {dma_channel}
 //! let sclk = peripherals.GPIO0;
 //! let miso = peripherals.GPIO1;
 //! let mosi = peripherals.GPIO2;
 //! let cs = peripherals.GPIO3;
 //!
-//! let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
-//! dma_buffers!(32000);
+//! let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(32000);
 //! let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
 //! let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
-//! let mut spi = Spi::new(
-//!     peripherals.SPI2,
-//!     Mode::_0,
-//! )
-//! .with_sck(sclk)
-//! .with_mosi(mosi)
-//! .with_miso(miso)
-//! .with_cs(cs)
-//! .with_dma(dma_channel);
+//! let mut spi = Spi::new(peripherals.SPI2, Mode::_0)
+//!     .with_sck(sclk)
+//!     .with_mosi(mosi)
+//!     .with_miso(miso)
+//!     .with_cs(cs)
+//!     .with_dma(dma_channel);
 //!
-//! let transfer = spi
-//!     .transfer(50, dma_rx_buf, 50, dma_tx_buf)?;
+//! let transfer = spi.transfer(50, dma_rx_buf, 50, dma_tx_buf)?;
 //!
 //! transfer.wait();
-//! # Ok(())
-//! # }
+//! # {after_snippet}
 //! ```
-//! 
+//!
 //! ## Implementation State
 //!
 //! This driver is currently **unstable**.
 //!
 //! There are several options for working with the SPI peripheral in slave mode,
 //! but the code currently only supports:
-//! - Single transfers (not segmented transfers)
-//! - Full duplex, single bit (not dual or quad SPI)
-//! - DMA mode (not CPU mode).
+//!     - Single transfers (not segmented transfers)
+//!     - Full duplex, single bit (not dual or quad SPI)
+//!     - DMA mode (not CPU mode).
 #![cfg_attr(esp32, doc = "- ESP32 only supports SPI mode 1 and 3.\n\n")]
 //! It also does not support blocking operations, as the actual
 //! transfer is controlled by the SPI master; if these are necessary,
@@ -80,7 +79,6 @@ use crate::{
         interconnect::{PeripheralInput, PeripheralOutput},
     },
     pac::spi2::RegisterBlock,
-    spi::AnySpi,
     system::PeripheralGuard,
 };
 
@@ -460,7 +458,6 @@ pub mod dma {
             self.info.regs()
         }
 
-        #[allow(clippy::too_many_arguments)]
         unsafe fn start_transfer_dma<Dm: DriverMode>(
             &self,
             read_buffer_len: usize,
@@ -579,7 +576,7 @@ pub mod dma {
 }
 
 /// A peripheral singleton compatible with the SPI slave driver.
-pub trait Instance: crate::private::Sealed + super::IntoAnySpi {
+pub trait Instance: crate::private::Sealed + any::Degrade {
     /// Returns the peripheral data describing this SPI instance.
     #[doc(hidden)]
     fn info(&self) -> &'static Info;
@@ -590,8 +587,9 @@ pub trait Instance: crate::private::Sealed + super::IntoAnySpi {
 #[allow(private_bounds)]
 pub trait InstanceDma: Instance + DmaEligible {}
 
+#[cfg(soc_has_spi2)]
 impl InstanceDma for crate::peripherals::SPI2<'_> {}
-#[cfg(spi3)]
+#[cfg(soc_has_spi3)]
 impl InstanceDma for crate::peripherals::SPI3<'_> {}
 
 /// Peripheral data describing a particular SPI instance.
@@ -787,52 +785,55 @@ impl PartialEq for Info {
 
 unsafe impl Sync for Info {}
 
-macro_rules! spi_instance {
-    ($num:literal, $sclk:ident, $mosi:ident, $miso:ident, $cs:ident) => {
-        paste::paste! {
-            impl Instance for crate::peripherals::[<SPI $num>]<'_> {
-                #[inline(always)]
-                fn info(&self) -> &'static Info {
-                    static INFO: Info = Info {
-                        register_block: crate::peripherals::[<SPI $num>]::regs(),
-                        peripheral: crate::system::Peripheral::[<Spi $num>],
-                        sclk: InputSignal::$sclk,
-                        mosi: InputSignal::$mosi,
-                        miso: OutputSignal::$miso,
-                        cs: InputSignal::$cs,
-                    };
+for_each_spi_slave! {
+    ($peri:ident, $sys:ident, $sclk:ident, $mosi:ident, $miso:ident, $cs:ident) => {
+        impl Instance for crate::peripherals::$peri<'_> {
+            #[inline(always)]
+            fn info(&self) -> &'static Info {
+                static INFO: Info = Info {
+                    register_block: crate::peripherals::$peri::regs(),
+                    peripheral: crate::system::Peripheral::$sys,
+                    sclk: InputSignal::$sclk,
+                    mosi: InputSignal::$mosi,
+                    miso: OutputSignal::$miso,
+                    cs: InputSignal::$cs,
+                };
 
-                    &INFO
-                }
+                &INFO
             }
         }
     };
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(esp32)] {
-        #[cfg(spi2)]
-        spi_instance!(2, HSPICLK, HSPID, HSPIQ, HSPICS0);
-        #[cfg(spi3)]
-        spi_instance!(3, VSPICLK, VSPID, VSPIQ, VSPICS0);
-    } else {
-        #[cfg(spi2)]
-        spi_instance!(2, FSPICLK, FSPID, FSPIQ, FSPICS0);
-        #[cfg(spi3)]
-        spi_instance!(3, SPI3_CLK, SPI3_D, SPI3_Q, SPI3_CS0);
+crate::any_peripheral! {
+    /// Any SPI peripheral.
+    pub peripheral AnySpi<'d> {
+        #[cfg(spi_master_spi2)]
+        Spi2(crate::peripherals::SPI2<'d>),
+        #[cfg(spi_master_spi3)]
+        Spi3(crate::peripherals::SPI3<'d>),
     }
 }
 
-impl Instance for super::AnySpi<'_> {
-    delegate::delegate! {
-        to match &self.0 {
-            super::AnySpiInner::Spi2(spi) => spi,
-            #[cfg(spi3)]
-            super::AnySpiInner::Spi3(spi) => spi,
-        } {
-            fn info(&self) -> &'static Info;
+impl<'d> DmaEligible for AnySpi<'d> {
+    #[cfg(gdma)]
+    type Dma = crate::dma::AnyGdmaChannel<'d>;
+    #[cfg(pdma)]
+    type Dma = crate::dma::AnySpiDmaChannel<'d>;
+
+    fn dma_peripheral(&self) -> crate::dma::DmaPeripheral {
+        match &self.0 {
+            #[cfg(spi_master_spi2)]
+            any::Inner::Spi2(_) => crate::dma::DmaPeripheral::Spi2,
+            #[cfg(spi_master_spi3)]
+            any::Inner::Spi3(_) => crate::dma::DmaPeripheral::Spi3,
         }
     }
 }
+impl Instance for AnySpi<'_> {
+    fn info(&self) -> &'static Info {
+        any::delegate!(self, spi => { spi.info() })
+    }
+}
 
-impl InstanceDma for super::AnySpi<'_> {}
+impl InstanceDma for AnySpi<'_> {}

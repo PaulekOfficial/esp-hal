@@ -14,28 +14,16 @@
 #![no_main]
 
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
-#[cfg(multi_core)]
-use esp_hal::system::{CpuControl, Stack};
-use esp_hal::{
-    interrupt::{
-        Priority,
-        software::{SoftwareInterrupt, SoftwareInterruptControl},
-    },
-    timer::AnyTimer,
+use esp_hal::interrupt::{
+    Priority,
+    software::{SoftwareInterrupt, SoftwareInterruptControl},
 };
 #[cfg(multi_core)]
-use esp_hal_embassy::Executor;
-use esp_hal_embassy::InterruptExecutor;
-use hil_test as _;
+use esp_hal::system::{AppCoreGuard, CpuControl, Stack};
+use esp_hal_embassy::{Executor, InterruptExecutor};
+use hil_test::mk_static;
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[embassy_executor::task]
 async fn responder_task(
@@ -49,6 +37,36 @@ async fn responder_task(
     }
 }
 
+#[embassy_executor::task]
+async fn tester_task(
+    signal: &'static Signal<CriticalSectionRawMutex, ()>,
+    response: &'static Signal<CriticalSectionRawMutex, ()>,
+) {
+    response.wait().await;
+    for _ in 0..3 {
+        signal.signal(());
+        response.wait().await;
+    }
+    embedded_test::export::check_outcome(());
+}
+
+#[embassy_executor::task]
+#[cfg(multi_core)]
+async fn tester_task_multi_core(
+    signal: &'static Signal<CriticalSectionRawMutex, ()>,
+    response: &'static Signal<CriticalSectionRawMutex, ()>,
+    core_guard: AppCoreGuard<'static>,
+) {
+    response.wait().await;
+    for _ in 0..3 {
+        signal.signal(());
+        response.wait().await;
+    }
+
+    core::mem::drop(core_guard);
+    embedded_test::export::check_outcome(());
+}
+
 struct Context {
     interrupt: SoftwareInterrupt<'static, 1>,
     #[cfg(multi_core)]
@@ -56,39 +74,17 @@ struct Context {
 }
 
 #[cfg(test)]
-#[embedded_test::tests(default_timeout = 3, executor = esp_hal_embassy::Executor::new())]
+#[embedded_test::tests(default_timeout = 3)]
 mod test {
+    use esp_hal_embassy::Callbacks;
+
     use super::*;
 
     #[init]
     fn init() -> Context {
         let peripherals = esp_hal::init(esp_hal::Config::default());
 
-        cfg_if::cfg_if! {
-            if #[cfg(timg_timer1)] {
-                use esp_hal::timer::timg::TimerGroup;
-                let timg0 = TimerGroup::new(peripherals.TIMG0);
-                esp_hal_embassy::init([
-                    AnyTimer::from(timg0.timer0),
-                    AnyTimer::from(timg0.timer1),
-                ]);
-            } else if #[cfg(timg1)] {
-                use esp_hal::timer::timg::TimerGroup;
-                let timg0 = TimerGroup::new(peripherals.TIMG0);
-                let timg1 = TimerGroup::new(peripherals.TIMG1);
-                esp_hal_embassy::init([
-                    AnyTimer::from(timg0.timer0),
-                    AnyTimer::from(timg1.timer0),
-                ]);
-            } else if #[cfg(systimer)] {
-                use esp_hal::timer::systimer::SystemTimer;
-                let systimer = SystemTimer::new(peripherals.SYSTIMER);
-                esp_hal_embassy::init([
-                    AnyTimer::from(systimer.alarm0),
-                    AnyTimer::from(systimer.alarm1),
-                ]);
-            }
-        }
+        hil_test::init_embassy!(peripherals, 2);
 
         let sw_ints = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
         Context {
@@ -99,26 +95,54 @@ mod test {
     }
 
     #[test]
-    async fn run_interrupt_executor_test(ctx: Context) {
+    fn run_test_with_callbacks_api(ctx: Context) {
         let interrupt_executor =
             mk_static!(InterruptExecutor<1>, InterruptExecutor::new(ctx.interrupt));
         let signal = mk_static!(Signal<CriticalSectionRawMutex, ()>, Signal::new());
         let response = mk_static!(Signal<CriticalSectionRawMutex, ()>, Signal::new());
 
         let spawner = interrupt_executor.start(Priority::Priority3);
+        spawner.must_spawn(responder_task(signal, response));
 
-        spawner.spawn(responder_task(signal, response)).unwrap();
+        let thread_executor = mk_static!(Executor, Executor::new());
 
-        response.wait().await;
-        for _ in 0..3 {
-            signal.signal(());
-            response.wait().await;
+        struct NoCallbacks;
+
+        impl Callbacks for NoCallbacks {
+            fn before_poll(&mut self) {}
+            fn on_idle(&mut self) {}
         }
+
+        let callbacks = NoCallbacks;
+
+        thread_executor.run_with_callbacks(
+            |spawner| {
+                spawner.must_spawn(tester_task(signal, response));
+            },
+            callbacks,
+        )
+    }
+
+    #[test]
+    fn run_interrupt_executor_test(ctx: Context) {
+        let interrupt_executor =
+            mk_static!(InterruptExecutor<1>, InterruptExecutor::new(ctx.interrupt));
+        let signal = mk_static!(Signal<CriticalSectionRawMutex, ()>, Signal::new());
+        let response = mk_static!(Signal<CriticalSectionRawMutex, ()>, Signal::new());
+
+        let spawner = interrupt_executor.start(Priority::Priority3);
+        spawner.must_spawn(responder_task(signal, response));
+
+        let thread_executor = mk_static!(Executor, Executor::new());
+
+        thread_executor.run(|spawner| {
+            spawner.must_spawn(tester_task(signal, response));
+        })
     }
 
     #[test]
     #[cfg(multi_core)]
-    async fn run_interrupt_executor_test_on_core_1(mut ctx: Context) {
+    fn run_interrupt_executor_test_on_core_1(mut ctx: Context) {
         let app_core_stack = mk_static!(Stack<8192>, Stack::new());
         let response = &*mk_static!(Signal<CriticalSectionRawMutex, ()>, Signal::new());
         let signal = &*mk_static!(Signal<CriticalSectionRawMutex, ()>, Signal::new());
@@ -136,21 +160,21 @@ mod test {
             }
         };
 
-        let _guard = ctx
+        let guard = ctx
             .cpu_control
             .start_app_core(app_core_stack, cpu1_fnctn)
             .unwrap();
 
-        response.wait().await;
-        for _ in 0..3 {
-            signal.signal(());
-            response.wait().await;
-        }
+        let thread_executor = mk_static!(Executor, Executor::new());
+
+        thread_executor.run(|spawner| {
+            spawner.must_spawn(tester_task_multi_core(signal, response, guard));
+        })
     }
 
     #[test]
     #[cfg(multi_core)]
-    async fn run_thread_executor_test_on_core_1(mut ctx: Context) {
+    fn run_thread_executor_test_on_core_1(mut ctx: Context) {
         let app_core_stack = mk_static!(Stack<8192>, Stack::new());
         let signal = mk_static!(Signal<CriticalSectionRawMutex, ()>, Signal::new());
         let response = mk_static!(Signal<CriticalSectionRawMutex, ()>, Signal::new());
@@ -162,15 +186,15 @@ mod test {
             });
         };
 
-        let _guard = ctx
+        let guard = ctx
             .cpu_control
             .start_app_core(app_core_stack, cpu1_fnctn)
             .unwrap();
 
-        response.wait().await;
-        for _ in 0..3 {
-            signal.signal(());
-            response.wait().await;
-        }
+        let thread_executor = mk_static!(Executor, Executor::new());
+
+        thread_executor.run(|spawner| {
+            spawner.must_spawn(tester_task_multi_core(signal, response, guard));
+        })
     }
 }

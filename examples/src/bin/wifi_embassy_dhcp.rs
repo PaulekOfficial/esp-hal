@@ -3,7 +3,8 @@
 //!
 //! Set SSID and PASSWORD env variable before running this example.
 //!
-//! This gets an ip address via DHCP then performs an HTTP get request to some "random" server
+//! This gets an ip address via DHCP then performs an HTTP get request to some
+//! "random" server
 //!
 //! Because of the huge task-arena size configured this won't work on ESP32-S2
 
@@ -28,6 +29,8 @@ use esp_wifi::{
     wifi::{ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiState},
 };
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -50,12 +53,8 @@ async fn main(spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let mut rng = Rng::new(peripherals.RNG);
 
-    let esp_wifi_ctrl = &*mk_static!(
-        EspWifiController<'static>,
-        init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap()
-    );
+    let esp_wifi_ctrl = &*mk_static!(EspWifiController<'static>, init(timg0.timer0).unwrap());
 
     let (controller, interfaces) = esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
 
@@ -74,6 +73,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let config = embassy_net::Config::dhcpv4(Default::default());
 
+    let rng = Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
     // Init network stack

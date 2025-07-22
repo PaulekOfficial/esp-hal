@@ -1,3 +1,10 @@
+#![cfg_attr(docsrs, procmacros::doc_replace(
+    "analog_pin" => {
+        cfg(esp32) => "let analog_pin = peripherals.GPIO32;",
+        cfg(any(esp32s2, esp32s3)) => "let analog_pin = peripherals.GPIO3;",
+        cfg(not(any(esp32, esp32s2, esp32s3)))  => "let analog_pin = peripherals.GPIO2;"
+    }
+))]
 //! # Analog to Digital Converter (ADC)
 //!
 //! ## Overview
@@ -21,23 +28,15 @@
 //! ### Read an analog signal from a pin
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::analog::adc::AdcConfig;
 //! # use esp_hal::peripherals::ADC1;
 //! # use esp_hal::analog::adc::Attenuation;
 //! # use esp_hal::analog::adc::Adc;
 //! # use esp_hal::delay::Delay;
-#![cfg_attr(esp32, doc = "let analog_pin = peripherals.GPIO32;")]
-#![cfg_attr(any(esp32s2, esp32s3), doc = "let analog_pin = peripherals.GPIO3;")]
-#![cfg_attr(
-    not(any(esp32, esp32s2, esp32s3)),
-    doc = "let analog_pin = peripherals.GPIO2;"
-)]
+//! # {analog_pin}
 //! let mut adc1_config = AdcConfig::new();
-//! let mut pin = adc1_config.enable_pin(
-//!     analog_pin,
-//!     Attenuation::_11dB,
-//! );
+//! let mut pin = adc1_config.enable_pin(analog_pin, Attenuation::_11dB);
 //! let mut adc1 = Adc::new(peripherals.ADC1, adc1_config);
 //!
 //! let mut delay = Delay::new();
@@ -49,7 +48,7 @@
 //! }
 //! # }
 //! ```
-//! 
+//!
 //! ## Implementation State
 //!
 //!  - [ADC calibration is not implemented for all targets].
@@ -105,7 +104,6 @@ pub struct AdcPin<PIN, ADCI, CS = ()> {
     /// The underlying GPIO pin
     pub pin: PIN,
     /// Calibration scheme used for the configured ADC pin
-    #[cfg_attr(esp32, allow(unused))]
     pub cal_scheme: CS,
     _phantom: PhantomData<ADCI>,
 }
@@ -113,7 +111,7 @@ pub struct AdcPin<PIN, ADCI, CS = ()> {
 /// Configuration for the ADC.
 #[cfg(feature = "unstable")]
 pub struct AdcConfig<ADCI> {
-    #[cfg_attr(not(esp32), allow(unused))]
+    #[cfg_attr(not(esp32), expect(unused))]
     resolution: Resolution,
     attenuations: [Option<Attenuation>; NUM_ATTENS],
     _phantom: PhantomData<ADCI>,

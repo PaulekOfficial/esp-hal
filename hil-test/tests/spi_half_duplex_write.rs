@@ -13,13 +13,14 @@ use esp_hal::{
     gpio::interconnect::InputSignal,
     pcnt::{Pcnt, channel::EdgeMode, unit::Unit},
     spi::{
-        DataMode,
         Mode,
-        master::{Address, Command, Config, Spi, SpiDma},
+        master::{Address, Command, Config, DataMode, Spi, SpiDma},
     },
     time::Rate,
 };
 use hil_test as _;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 struct Context {
     spi: SpiDma<'static, Blocking>,

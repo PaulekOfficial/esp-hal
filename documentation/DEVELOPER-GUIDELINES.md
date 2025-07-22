@@ -61,6 +61,7 @@ In general, the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines
     - see [this example](https://github.com/esp-rs/esp-hal/blob/df2b7bd8472cc1d18db0d9441156575570f59bb3/esp-hal/src/spi/mod.rs#L15)
     - e.g. `#[cfg_attr(feature = "defmt", derive(defmt::Format))]`
   - Implementations of common, but unstable traits (e.g. `embassy_embedded_hal::SetConfig`) need to be gated with the `unstable` feature.
+- Libraries depending on esp-hal, should disable the `rt` feature to avoid future compatibility concerns.
 
 ## API Surface
 
@@ -164,3 +165,11 @@ Modules should have the following documentation format:
   - For more complex scenarios, create an example.
 - Use rustdoc syntax for linking to other documentation items instead of markdown links where possible
   - https://doc.rust-lang.org/rustdoc/write-documentation/linking-to-items-by-name.html
+
+## Breaking changes
+
+We check our stable API surface using semver-checks. To facilitate these checks, we do a number of preprocessing steps to ensure we're only checking _our_ stable API. Therefore the API baseline is stored in `$krate/api-baseline/`. We may want to allow breaking changes, in the case of fixing soundness issues etc. In this case, all that is required is to simply run `cargo xcheck semver-check generate-baseline`.
+
+### Compiler updates
+
+Compiler updates force the regeneration of the API baseline due to the dependency on the unstable rustdoc format. Regeneration **must** occur on the same commit as the previous generation in this case, to ensure no breaking changes are silently introduced. Checkout the last commit of generation, generate the baseline and move them out the repo. Checkout your PR branch and add them back there.

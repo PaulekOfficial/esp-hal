@@ -107,6 +107,7 @@ use crate::binary::{
         esp_wifi_set_mode,
         esp_wifi_set_protocol,
         esp_wifi_set_tx_done_cb,
+        esp_wifi_sta_get_rssi,
         esp_wifi_start,
         esp_wifi_stop,
         g_wifi_default_wpa_crypto_funcs,
@@ -216,6 +217,49 @@ pub enum SecondaryChannel {
     Below,
 }
 
+/// Access point country information.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+pub struct Country([u8; 2]);
+
+impl Country {
+    fn try_from_c(info: &wifi_country_t) -> Option<Self> {
+        // Find the null terminator or end of array
+        let cc_len = info
+            .cc
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(info.cc.len());
+
+        if cc_len < 2 {
+            return None;
+        }
+
+        // Validate that we have at least 2 valid ASCII characters
+        let cc_slice = &info.cc[..cc_len.min(2)];
+        if cc_slice.iter().all(|&b| b.is_ascii_uppercase()) {
+            Some(Self([cc_slice[0], cc_slice[1]]))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the country code as a string slice.
+    pub fn country_code(&self) -> &str {
+        unsafe {
+            // SAFETY: we have verified in the constructor that the bytes are upper-case ASCII.
+            core::str::from_utf8_unchecked(&self.0)
+        }
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for Country {
+    fn format(&self, fmt: defmt::Formatter<'_>) {
+        self.country_code().format(fmt)
+    }
+}
+
 /// Information about a detected Wi-Fi access point.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -240,6 +284,9 @@ pub struct AccessPointInfo {
 
     /// The authentication method used by the access point.
     pub auth_method: Option<AuthMethod>,
+
+    /// The country information of the access point (if available from beacon frames).
+    pub country: Option<Country>,
 }
 
 /// Configuration for a Wi-Fi access point.
@@ -1359,8 +1406,6 @@ pub(crate) fn wifi_init() -> Result<(), WifiError> {
             chip_specific::g_misc_nvs = addr_of!(NVS_STRUCT) as u32;
         }
 
-        crate::flags::WIFI.fetch_add(1, Ordering::SeqCst);
-
         Ok(())
     }
 }
@@ -1397,7 +1442,7 @@ pub(crate) unsafe extern "C" fn coex_init() -> i32 {
     0
 }
 
-pub(crate) fn wifi_deinit() -> Result<(), crate::InitializationError> {
+fn wifi_deinit() -> Result<(), crate::InitializationError> {
     esp_wifi_result!(unsafe { esp_wifi_stop() })?;
     esp_wifi_result!(unsafe { esp_wifi_deinit_internal() })?;
     esp_wifi_result!(unsafe { esp_supplicant_deinit() })?;
@@ -1529,8 +1574,8 @@ pub enum ScanTypeConfig {
     ///
     /// # Procedure
     /// 1. Send probe request on each channel.
-    /// 2. Wait for probe response. Wait at least `min` time, but if no response
-    ///    is received, wait up to `max` time.
+    /// 2. Wait for probe response. Wait at least `min` time, but if no response is received, wait
+    ///    up to `max` time.
     /// 3. Switch channel.
     /// 4. Repeat from 1.
     Active {
@@ -1852,6 +1897,7 @@ fn convert_ap_info(record: &include::wifi_ap_record_t) -> AccessPointInfo {
         },
         signal_strength: record.rssi,
         auth_method: Some(AuthMethod::from_raw(record.authmode)),
+        country: Country::try_from_c(&record.country),
     }
 }
 
@@ -2609,9 +2655,10 @@ pub struct Interfaces<'d> {
 ///
 /// Dropping the controller will deinitialize / stop WiFi.
 ///
-/// Make sure to **not** call this function while interrupts are disabled.
+/// Make sure to **not** call this function while interrupts are disabled, or IEEE 802.15.4 is
+/// currently in use.
 pub fn new<'d>(
-    inited: &'d EspWifiController<'d>,
+    _inited: &'d EspWifiController<'d>,
     _device: crate::hal::peripherals::WIFI<'d>,
 ) -> Result<(WifiController<'d>, Interfaces<'d>), WifiError> {
     if crate::is_interrupts_disabled() {
@@ -2622,30 +2669,28 @@ pub fn new<'d>(
         _phantom: Default::default(),
     };
 
-    if !inited.wifi() {
-        crate::wifi::wifi_init()?;
+    crate::wifi::wifi_init()?;
 
-        let mut cntry_code = [0u8; 3];
-        cntry_code[..crate::CONFIG.country_code.len()]
-            .copy_from_slice(crate::CONFIG.country_code.as_bytes());
-        cntry_code[2] = crate::CONFIG.country_code_operating_class;
+    let mut cntry_code = [0u8; 3];
+    cntry_code[..crate::CONFIG.country_code.len()]
+        .copy_from_slice(crate::CONFIG.country_code.as_bytes());
+    cntry_code[2] = crate::CONFIG.country_code_operating_class;
 
-        #[allow(clippy::useless_transmute)]
-        unsafe {
-            let country = wifi_country_t {
-                // FIXME once we bumped the MSRV accordingly (see https://github.com/esp-rs/esp-hal/pull/3027#discussion_r1944718266)
-                #[allow(clippy::useless_transmute)]
-                cc: core::mem::transmute::<[u8; 3], [core::ffi::c_char; 3]>(cntry_code),
-                schan: 1,
-                nchan: 13,
-                max_tx_power: 20,
-                policy: wifi_country_policy_t_WIFI_COUNTRY_POLICY_MANUAL,
-            };
-            esp_wifi_result!(esp_wifi_set_country(&country))?;
-        }
-
-        controller.set_power_saving(PowerSaveMode::default())?;
+    unsafe {
+        let country = wifi_country_t {
+            cc: cntry_code,
+            schan: 1,
+            nchan: 13,
+            max_tx_power: 20,
+            policy: wifi_country_policy_t_WIFI_COUNTRY_POLICY_MANUAL,
+        };
+        esp_wifi_result!(esp_wifi_set_country(&country))?;
     }
+
+    // At some point the "High-speed ADC" entropy source became available.
+    unsafe { esp_hal::rng::TrngSource::increase_entropy_source_counter() };
+
+    controller.set_power_saving(PowerSaveMode::default())?;
 
     Ok((
         controller,
@@ -2673,16 +2718,13 @@ pub struct WifiController<'d> {
 
 impl Drop for WifiController<'_> {
     fn drop(&mut self) {
-        if unwrap!(
-            crate::flags::WIFI.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-                Some(x.saturating_sub(1))
-            })
-        ) == 0
-        {
-            if let Err(e) = crate::wifi::wifi_deinit() {
-                warn!("Failed to cleanly deinit wifi: {:?}", e);
-            }
+        if let Err(e) = crate::wifi::wifi_deinit() {
+            warn!("Failed to cleanly deinit wifi: {:?}", e);
         }
+
+        esp_hal::rng::TrngSource::decrease_entropy_source_counter(unsafe {
+            esp_hal::Internal::conjure()
+        });
     }
 }
 
@@ -2812,10 +2854,9 @@ impl WifiController<'_> {
     /// Connect WiFi station to the AP.
     ///
     /// - If station is connected , call [Self::disconnect] to disconnect.
-    /// - Scanning will not be effective until connection between device and the
-    ///   AP is established.
-    /// - If device is scanning and connecting at the same time, it will abort
-    ///   scanning and return a warning message and error
+    /// - Scanning will not be effective until connection between device and the AP is established.
+    /// - If device is scanning and connecting at the same time, it will abort scanning and return a
+    ///   warning message and error
     pub fn connect(&mut self) -> Result<(), WifiError> {
         self.connect_impl()
     }
@@ -2823,6 +2864,29 @@ impl WifiController<'_> {
     /// Disconnect WiFi station from the AP.
     pub fn disconnect(&mut self) -> Result<(), WifiError> {
         self.disconnect_impl()
+    }
+
+    /// Get the rssi information of AP to which the device is associated with.
+    /// The value is obtained from the last beacon.
+    ///
+    /// <div class="warning">
+    ///
+    /// - This API should be called after station connected to AP.
+    /// - Use this API only in STA or AP-STA mode.
+    /// </div>
+    ///
+    /// # Errors
+    /// This function returns [WifiError::Unsupported] if the STA side isn't
+    /// running. For example, when configured for AP only.
+    pub fn rssi(&self) -> Result<i32, WifiError> {
+        if self.mode()?.is_sta() {
+            let mut rssi: i32 = 0;
+            // Will return ESP_FAIL -1 if called in AP mode.
+            esp_wifi_result!(unsafe { esp_wifi_sta_get_rssi(&mut rssi) })?;
+            Ok(rssi)
+        } else {
+            Err(WifiError::Unsupported)
+        }
     }
 
     /// Get the supported capabilities of the controller.

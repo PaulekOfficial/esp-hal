@@ -1,14 +1,17 @@
 //! Run a test of download, upload and download+upload in async fashion.
 //!
-//! A prerequisite to running the benchmark examples is to run the benchmark server on your local machine. Simply run the following commands to do so.
+//! A prerequisite to running the benchmark examples is to run the benchmark
+//! server on your local machine. Simply run the following commands to do so.
 //! ```
 //! cd extras/bench-server
 //! cargo run --release
 //! ```
-//! Ensure you have set the IP of your local machine in the `HOST_IP` env variable. E.g `HOST_IP="192.168.0.24"` and also set SSID and PASSWORD env variable before running this example.
+//! Ensure you have set the IP of your local machine in the `HOST_IP` env
+//! variable. E.g `HOST_IP="192.168.0.24"` and also set SSID and PASSWORD env
+//! variable before running this example.
 //!
-//! Because of the huge task-arena size configured this won't work on ESP32-S2 and ESP32-C2
-//!
+//! Because of the huge task-arena size configured this won't work on ESP32-S2
+//! and ESP32-C2
 
 //% FEATURES: embassy esp-wifi esp-wifi/wifi esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c3 esp32c6
@@ -32,6 +35,8 @@ use esp_wifi::{
     init,
     wifi::{ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiState},
 };
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -72,12 +77,8 @@ async fn main(spawner: Spawner) -> ! {
     let server_address: Ipv4Addr = HOST_IP.parse().expect("Invalid HOST_IP address");
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let mut rng = Rng::new(peripherals.RNG);
 
-    let esp_wifi_ctrl = &*mk_static!(
-        EspWifiController<'static>,
-        init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap()
-    );
+    let esp_wifi_ctrl = &*mk_static!(EspWifiController<'static>, init(timg0.timer0,).unwrap());
 
     let (mut controller, interfaces) =
         esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
@@ -101,6 +102,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let config = embassy_net::Config::dhcpv4(Default::default());
 
+    let rng = Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
     // Init network stack

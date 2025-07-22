@@ -12,7 +12,7 @@ use esp_hal::{
     interrupt::{InterruptHandler, Priority},
     sync::Locked,
     time::{Duration, Instant},
-    timer::OneShotTimer,
+    timer::{Error, OneShotTimer},
 };
 
 pub type Timer = OneShotTimer<'static, Blocking>;
@@ -95,17 +95,15 @@ impl Alarm {
 /// We are free to choose how we implement these features, and we provide
 /// three options:
 ///
-/// - If the `generic` feature is enabled, we implement a single timer queue,
-///   using the implementation provided by embassy-time-queue-driver.
-/// - If the `single-integrated` feature is enabled, we implement a single timer
-///   queue, using our own integrated timer implementation. Our implementation
-///   is a copy of the embassy integrated timer queue, with the addition of
-///   clearing the "owner" information upon dequeueing.
-/// - If the `multiple-integrated` feature is enabled, we provide a separate
-///   timer queue for each executor. We store a separate timer queue for each
-///   executor, and we use the scheduled task's owner to determine which queue
-///   to use. This mode allows us to use less disruptive locks around the timer
-///   queue, but requires more timers - one per timer queue.
+/// - If the `generic` feature is enabled, we implement a single timer queue, using the
+///   implementation provided by embassy-time-queue-driver.
+/// - If the `single-integrated` feature is enabled, we implement a single timer queue, using our
+///   own integrated timer implementation. Our implementation is a copy of the embassy integrated
+///   timer queue, with the addition of clearing the "owner" information upon dequeueing.
+/// - If the `multiple-integrated` feature is enabled, we provide a separate timer queue for each
+///   executor. We store a separate timer queue for each executor, and we use the scheduled task's
+///   owner to determine which queue to use. This mode allows us to use less disruptive locks around
+///   the timer queue, but requires more timers - one per timer queue.
 pub(super) struct EmbassyTimer {
     /// The timer queue, if we use a single one (single-integrated, or generic).
     #[cfg(single_queue)]
@@ -159,9 +157,13 @@ impl EmbassyTimer {
         });
 
         // Store the available timers
-        DRIVER
-            .available_timers
-            .with(|available_timers| *available_timers = Some(timers));
+        DRIVER.available_timers.with(|available_timers| {
+            assert!(
+                available_timers.is_none(),
+                "The timers have already been initialized."
+            );
+            *available_timers = Some(timers);
+        });
     }
 
     #[cfg(not(single_queue))]
@@ -206,8 +208,20 @@ impl EmbassyTimer {
         let now = Instant::now().duration_since_epoch().as_micros();
 
         if timestamp > now {
-            let timeout = Duration::from_micros(timestamp - now);
-            unwrap!(timer.schedule(timeout));
+            let mut timeout = Duration::from_micros(timestamp - now);
+            loop {
+                // The timer API doesn't let us query a maximum timeout, so let's try backing
+                // off on failure.
+                match timer.schedule(timeout) {
+                    Ok(()) => break,
+                    Err(Error::InvalidTimeout) => {
+                        // It's okay to wake up earlier than scheduled.
+                        timeout = timeout / 2;
+                        assert_ne!(timeout, Duration::ZERO);
+                    }
+                    other => unwrap!(other),
+                }
+            }
             true
         } else {
             // If the timestamp is past, we return `false` to ask embassy to poll again

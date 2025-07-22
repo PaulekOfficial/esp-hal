@@ -3,8 +3,8 @@
 //!
 //! Set SSID and PASSWORD env variable before running this example.
 //!
-//! This gets an ip address via DHCP then performs an HTTP get request to some "random" server
-//!
+//! This gets an ip address via DHCP then performs an HTTP get request to some
+//! "random" server
 
 //% FEATURES: esp-wifi esp-wifi/wifi  esp-hal/unstable esp-wifi/smoltcp
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c6
@@ -38,6 +38,8 @@ use smoltcp::{
     wire::{DhcpOption, IpAddress},
 };
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 
@@ -51,9 +53,7 @@ fn main() -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let mut rng = Rng::new(peripherals.RNG);
-
-    let esp_wifi_ctrl = init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap();
+    let esp_wifi_ctrl = init(timg0.timer0).unwrap();
 
     let (mut controller, interfaces) =
         esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
@@ -71,6 +71,7 @@ fn main() -> ! {
     }]);
     socket_set.add(dhcp_socket);
 
+    let rng = Rng::new();
     let now = || time::Instant::now().duration_since_epoch().as_millis();
     let stack = Stack::new(iface, device, socket_set, now, rng.random());
 

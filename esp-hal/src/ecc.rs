@@ -12,8 +12,7 @@
 //!
 //! ## Configuration
 //! ECC Accelerator supports:
-//! - Two different elliptic curves, namely P-192 and P-256 defined in FIPS
-//!   186-3.
+//! - Two different elliptic curves, namely P-192 and P-256 defined in FIPS 186-3.
 //! - Seven working modes.
 //! - Interrupt upon completion of calculation.
 //!
@@ -437,7 +436,7 @@ impl<Dm: DriverMode> Ecc<'_, Dm> {
     ///
     /// This function will return an error if the point is not on the selected
     /// elliptic curve.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[cfg(esp32h2)]
     pub fn affine_point_verification_multiplication(
         &mut self,

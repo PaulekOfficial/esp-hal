@@ -5,7 +5,6 @@
 //! - might be necessary to configure your WiFi access point accordingly
 //! - uses the given static IP
 //! - responds with some HTML content when connecting to port 8080
-//!
 
 //% FEATURES: esp-wifi esp-wifi/wifi esp-wifi/smoltcp esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c6
@@ -31,6 +30,8 @@ use esp_wifi::{
 };
 use smoltcp::iface::{SocketSet, SocketStorage};
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 const STATIC_IP: &str = env!("STATIC_IP");
@@ -46,9 +47,7 @@ fn main() -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let mut rng = Rng::new(peripherals.RNG);
-
-    let esp_wifi_ctrl = init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap();
+    let esp_wifi_ctrl = init(timg0.timer0).unwrap();
 
     let (mut controller, interfaces) =
         esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
@@ -63,6 +62,7 @@ fn main() -> ! {
     let mut socket_set_entries: [SocketStorage; 3] = Default::default();
     let socket_set = SocketSet::new(&mut socket_set_entries[..]);
 
+    let rng = Rng::new();
     let now = || time::Instant::now().duration_since_epoch().as_millis();
     let mut stack = Stack::new(iface, device, socket_set, now, rng.random());
 

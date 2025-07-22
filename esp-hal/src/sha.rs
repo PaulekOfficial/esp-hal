@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # Secure Hash Algorithm (SHA) Accelerator
 //!
 //! ## Overview
@@ -30,7 +31,7 @@
 //!
 //! ## Examples
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::sha::Sha;
 //! # use esp_hal::sha::Sha256;
 //! # use nb::block;
@@ -51,8 +52,7 @@
 //! // the output.
 //! block!(hasher.finish(output.as_mut_slice()))?;
 //!
-//! # Ok(())
-//! # }
+//! # {after_snippet}
 //! ```
 //! ## Implementation State
 //! - DMA-SHA Mode is not supported.
@@ -60,7 +60,6 @@
 use core::{borrow::Borrow, convert::Infallible, marker::PhantomData, mem::size_of};
 
 /// Re-export digest for convenience
-#[cfg(feature = "digest")]
 pub use digest::Digest;
 
 #[cfg(not(esp32))]
@@ -118,16 +117,12 @@ impl crate::interrupt::InterruptConfigurable for Sha<'_> {
 }
 
 // A few notes on this implementation with regards to 'memcpy',
-// - The registers are *not* cleared after processing, so padding needs to be
-//   written out
-// - This component uses core::intrinsics::volatile_* which is unstable, but is
-//   the only way to
+// - The registers are *not* cleared after processing, so padding needs to be written out
+// - This component uses core::intrinsics::volatile_* which is unstable, but is the only way to
 // efficiently copy memory with volatile
-// - For this particular registers (and probably others), a full u32 needs to be
-//   written partial
+// - For this particular registers (and probably others), a full u32 needs to be written partial
 // register writes (i.e. in u8 mode) does not work
-//   - This means that we need to buffer bytes coming in up to 4 u8's in order
-//     to create a full u32
+//   - This means that we need to buffer bytes coming in up to 4 u8's in order to create a full u32
 
 /// An active digest
 ///
@@ -240,12 +235,12 @@ impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> ShaDigest<'d, A, S> {
             );
             self.cursor = self.cursor.wrapping_add(flushed);
 
-            if flushed > 0 && self.cursor % A::CHUNK_LENGTH == 0 {
+            if flushed > 0 && self.cursor.is_multiple_of(A::CHUNK_LENGTH) {
                 self.process_buffer();
                 while self.is_busy() {}
             }
         }
-        debug_assert!(self.cursor % 4 == 0);
+        debug_assert!(self.cursor.is_multiple_of(4));
 
         let mod_cursor = self.cursor % A::CHUNK_LENGTH;
         if (A::CHUNK_LENGTH - mod_cursor) < A::CHUNK_LENGTH / 8 {
@@ -490,7 +485,6 @@ pub trait ShaAlgorithm: crate::private::Sealed {
     /// For example, in SHA-256, this would be 32 bytes.
     const DIGEST_LENGTH: usize;
 
-    #[cfg(feature = "digest")]
     #[doc(hidden)]
     type DigestOutputSize: digest::generic_array::ArrayLength<u8> + 'static;
 
@@ -522,25 +516,20 @@ pub trait ShaAlgorithm: crate::private::Sealed {
 /// implement digest traits if digest feature is present.
 /// Note: digest has a blanket trait implementation for [digest::Digest] for any
 /// element that implements FixedOutput + Default + Update + HashMarker
-#[cfg(feature = "digest")]
 impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> digest::HashMarker for ShaDigest<'d, A, S> {}
 
-#[cfg(feature = "digest")]
 impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> digest::OutputSizeUser for ShaDigest<'d, A, S> {
     type OutputSize = A::DigestOutputSize;
 }
 
-#[cfg(feature = "digest")]
 impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> digest::Update for ShaDigest<'d, A, S> {
-    fn update(&mut self, data: &[u8]) {
-        let mut remaining = data.as_ref();
+    fn update(&mut self, mut remaining: &[u8]) {
         while !remaining.is_empty() {
             remaining = nb::block!(Self::update(self, remaining)).unwrap();
         }
     }
 }
 
-#[cfg(feature = "digest")]
 impl<'d, A: ShaAlgorithm, S: Borrow<Sha<'d>>> digest::FixedOutput for ShaDigest<'d, A, S> {
     fn finalize_into(mut self, out: &mut digest::Output<Self>) {
         nb::block!(self.finish(out)).unwrap();
@@ -575,7 +564,6 @@ macro_rules! impl_sha {
             #[cfg(not(esp32))]
             const MODE_AS_BITS: u8 = $mode_bits;
 
-            #[cfg(feature = "digest")]
             // We use paste to append `U` to the digest size to match a const defined in
             // digest
             type DigestOutputSize = paste::paste!(digest::consts::[< U $digest_length >]);
@@ -623,20 +611,21 @@ macro_rules! impl_sha {
 // Two working modes
 // – Typical SHA
 // – DMA-SHA (not implemented yet)
-//
-// TODO: Allow/Implement SHA512_(u16)
+#[cfg(sha_algo_sha_1)]
 impl_sha!(Sha1, 0, 20, 64);
-#[cfg(not(esp32))]
+#[cfg(sha_algo_sha_224)]
 impl_sha!(Sha224, 1, 28, 64);
+#[cfg(sha_algo_sha_256)]
 impl_sha!(Sha256, 2, 32, 64);
-#[cfg(any(esp32, esp32s2, esp32s3))]
+#[cfg(sha_algo_sha_384)]
 impl_sha!(Sha384, 3, 48, 128);
-#[cfg(any(esp32, esp32s2, esp32s3))]
+#[cfg(sha_algo_sha_512)]
 impl_sha!(Sha512, 4, 64, 128);
-#[cfg(any(esp32s2, esp32s3))]
+#[cfg(sha_algo_sha_512_224)]
 impl_sha!(Sha512_224, 5, 28, 128);
-#[cfg(any(esp32s2, esp32s3))]
+#[cfg(sha_algo_sha_512_256)]
 impl_sha!(Sha512_256, 6, 32, 128);
+// TODO: Allow/Implement SHA512_(u16)
 
 fn h_mem(sha: &crate::peripherals::SHA<'_>, index: usize) -> *mut u32 {
     let sha = sha.register_block();

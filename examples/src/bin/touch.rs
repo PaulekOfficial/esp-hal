@@ -28,6 +28,8 @@ use esp_hal::{
 };
 use esp_println::println;
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 static TOUCH1: Mutex<RefCell<Option<TouchPad<GPIO4<'static>, Continuous, Blocking>>>> =
     Mutex::new(RefCell::new(None));
 
@@ -40,7 +42,8 @@ fn interrupt_handler() {
         if touch1.is_interrupt_set() {
             println!("touch 1 pin interrupt");
             touch1.clear_interrupt();
-            // We disable the interrupt until the next loop iteration to avoid massive retriggering.
+            // We disable the interrupt until the next loop iteration to avoid massive
+            // retriggering.
             touch1.disable_interrupt();
         }
     });

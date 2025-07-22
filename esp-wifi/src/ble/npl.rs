@@ -2,7 +2,6 @@ use alloc::boxed::Box;
 use core::{
     mem::size_of_val,
     ptr::{addr_of, addr_of_mut},
-    sync::atomic::Ordering,
 };
 
 use super::*;
@@ -1218,13 +1217,19 @@ pub(crate) fn ble_init() {
         // this is to avoid (ASSERT r_ble_hci_ram_hs_cmd_tx:34 0 0)
         // we wait a bit to make sure the ble task initialized everything
         crate::compat::common::sleep(10);
-
-        debug!("The ble_controller_init was initialized");
     }
-    crate::flags::BLE.store(true, Ordering::Release);
+
+    // At some point the "High-speed ADC" entropy source became available.
+    unsafe { esp_hal::rng::TrngSource::increase_entropy_source_counter() };
+
+    debug!("The ble_controller_init was initialized");
 }
 
 pub(crate) fn ble_deinit() {
+    esp_hal::rng::TrngSource::decrease_entropy_source_counter(unsafe {
+        esp_hal::Internal::conjure()
+    });
+
     unsafe {
         // HCI deinit
         npl::r_ble_hci_trans_cfg_hs(None, core::ptr::null(), None, core::ptr::null());
@@ -1248,7 +1253,6 @@ pub(crate) fn ble_deinit() {
 
         crate::common_adapter::chip_specific::phy_disable();
     }
-    crate::flags::BLE.store(false, Ordering::Release);
 }
 
 #[cfg(esp32c2)]

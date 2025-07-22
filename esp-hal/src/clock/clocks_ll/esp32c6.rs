@@ -141,7 +141,7 @@ pub(crate) fn esp32c6_rtc_apb_freq_update(apb_freq: ApbClock) {
 
     LP_AON::regs()
         .store5()
-        .modify(|_, w| unsafe { w.lp_aon_store5().bits(value) });
+        .modify(|_, w| unsafe { w.data().bits(value) });
 }
 
 fn clk_ll_mspi_fast_set_hs_divider(divider: u32) {
@@ -207,6 +207,7 @@ pub(super) fn enable_phy(en: bool) {
         .modify(|_, w| w.clk_i2c_mst_sel_160m().bit(en));
 }
 
+#[cfg_attr(not(feature = "unstable"), expect(unused))]
 pub(super) fn enable_wifi(en: bool) {
     MODEM_SYSCON::regs().clk_conf1().modify(|_, w| {
         w.clk_wifi_apb_en().bit(en);
@@ -232,6 +233,7 @@ pub(super) fn enable_wifi(en: bool) {
     });
 }
 
+#[cfg_attr(not(feature = "unstable"), expect(unused))]
 pub(super) fn enable_ieee802154(en: bool) {
     MODEM_SYSCON::regs().clk_conf().modify(|_, w| {
         w.clk_zb_apb_en().bit(en);
@@ -261,6 +263,7 @@ pub(super) fn enable_ieee802154(en: bool) {
         .modify(|_, w| w.clk_coex_en().set_bit());
 }
 
+#[cfg_attr(not(feature = "unstable"), expect(unused))]
 pub(super) fn enable_bt(en: bool) {
     MODEM_SYSCON::regs().clk_conf().modify(|_, w| {
         w.clk_etm_en().bit(en);
@@ -286,7 +289,7 @@ pub(super) fn enable_bt(en: bool) {
         .modify(|_, w| w.clk_coex_en().bit(en));
 }
 
-pub(super) fn reset_mac() {
+pub(super) fn reset_wifi_mac() {
     // empty
 }
 

@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/esp-wifi?labelColor=1C2C2E&color=C96329&logo=Rust&style=flat-square)](https://crates.io/crates/esp-wifi)
 [![docs.rs](https://img.shields.io/docsrs/esp-wifi?labelColor=1C2C2E&color=C96329&logo=rust&style=flat-square)](https://docs.espressif.com/projects/rust/esp-wifi/latest/)
-![MSRV](https://img.shields.io/badge/MSRV-1.84-blue?labelColor=1C2C2E&style=flat-square)
+![MSRV](https://img.shields.io/badge/MSRV-1.88.0-blue?labelColor=1C2C2E&style=flat-square)
 ![Crates.io](https://img.shields.io/crates/l/esp-wifi?labelColor=1C2C2E&style=flat-square)
 [![Matrix](https://img.shields.io/matrix/esp-rs:matrix.org?label=join%20matrix&labelColor=1C2C2E&color=BEC5C9&logo=matrix&style=flat-square)](https://matrix.to/#/#esp-rs:matrix.org)
 
@@ -12,7 +12,7 @@ Note that this crate currently requires you to enable the `unstable` feature on 
 
 ## Current support
 
-If a cell contains an em dash (&mdash;) this means that the particular feature is not present for a chip. A check mark (✓) means that some driver implementation exists. A Tilde (&tilde;) means it is implemented but buggy. An empty cell means that the feature is present in the chip but not implemented yet.
+If a cell contains an em dash (&mdash;) this means that the particular feature is not present for a chip. A check mark (✓) means that some driver implementation exists.
 
 |          | [Wifi](https://github.com/esp-rs/esp-wifi/issues/94) | [BLE](https://github.com/esp-rs/esp-wifi/issues/93) | [Coex](https://github.com/esp-rs/esp-wifi/issues/92) | ESP-NOW |
 | :------: | :--------------------------------------------------: | :-------------------------------------------------: | :--------------------------------------------------: | :-----: |
@@ -28,14 +28,11 @@ If a cell contains an em dash (&mdash;) this means that the particular feature i
 
 - Support for non-open SoftAP
 
-## Directory Structure
+## Bluetooth stack
+We recommend using [`TrouBLE`] as the Bluetooth stack. You can find detailed examples [here].
 
-- `src/timer/`: systimer code used for timing and task switching
-- `src/preemt/`: a bare minimum RISCV and Xtensa round-robin task scheduler
-- `src/compat/`: code needed to emulate enough of an (RT)OS to use the driver
-  - `common.rs`: basics like semaphores and recursive mutexes
-  - `timer_compat.rs`: code to emulate timer related functionality
-- `examples/*.rs`: examples
+[`TrouBLE`]: https://github.com/embassy-rs/trouble/tree/main
+[here]: https://github.com/embassy-rs/trouble/tree/main/examples/esp32
 
 ## Driver version
 

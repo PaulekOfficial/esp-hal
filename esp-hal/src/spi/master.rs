@@ -14,10 +14,10 @@
 //! If all you want to do is to communicate to a single device, and you initiate
 //! transactions yourself, there are a number of ways to achieve this:
 //!
-//! - Use the [`SpiBus`](embedded_hal::spi::SpiBus) trait and its associated
-//!   functions to initiate transactions with simultaneous reads and writes, or
-//! - Use the `ExclusiveDevice` struct from [`embedded-hal-bus`] or `SpiDevice`
-//!   from [`embassy-embedded-hal`].
+//! - Use the [`SpiBus`](embedded_hal::spi::SpiBus) trait and its associated functions to initiate
+//!   transactions with simultaneous reads and writes, or
+//! - Use the `ExclusiveDevice` struct from [`embedded-hal-bus`] or `SpiDevice` from
+//!   [`embassy-embedded-hal`].
 //!
 //! ### Shared SPI access
 //!
@@ -41,10 +41,11 @@ use core::marker::PhantomData;
 #[instability::unstable]
 pub use dma::*;
 use enumset::{EnumSet, EnumSetType};
+use procmacros::doc_replace;
 #[cfg(place_spi_master_driver_in_ram)]
 use procmacros::ram;
 
-use super::{BitOrder, DataMode, DmaError, Error, Mode};
+use super::{BitOrder, DmaError, Error, Mode};
 use crate::{
     Async,
     Blocking,
@@ -59,13 +60,12 @@ use crate::{
         OutputConfig,
         OutputSignal,
         PinGuard,
-        interconnect::{PeripheralInput, PeripheralOutput},
+        interconnect::{self, PeripheralInput, PeripheralOutput},
     },
     interrupt::InterruptHandler,
     pac::spi2::RegisterBlock,
     private::{self, OnDrop, Sealed},
-    spi::AnySpi,
-    system::{Cpu, PeripheralGuard},
+    system::PeripheralGuard,
     time::Rate,
 };
 
@@ -602,7 +602,7 @@ impl Config {
 
         if self.frequency < source_freq / max_divider || self.frequency > source_freq / min_divider
         {
-            return Err(ConfigError::UnsupportedFrequency);
+            return Err(ConfigError::FrequencyOutOfRange);
         }
 
         Ok(())
@@ -612,12 +612,20 @@ impl Config {
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 struct SpiPinGuard {
-    mosi_pin: PinGuard,
     sclk_pin: PinGuard,
     cs_pin: PinGuard,
+    sio0_pin: PinGuard,
     sio1_pin: PinGuard,
     sio2_pin: Option<PinGuard>,
     sio3_pin: Option<PinGuard>,
+    #[cfg(spi_master_has_octal)]
+    sio4_pin: Option<PinGuard>,
+    #[cfg(spi_master_has_octal)]
+    sio5_pin: Option<PinGuard>,
+    #[cfg(spi_master_has_octal)]
+    sio6_pin: Option<PinGuard>,
+    #[cfg(spi_master_has_octal)]
+    sio7_pin: Option<PinGuard>,
 }
 
 /// Configuration errors.
@@ -625,8 +633,8 @@ struct SpiPinGuard {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConfigError {
-    /// The requested frequency is not supported.
-    UnsupportedFrequency,
+    /// The requested frequency is not in the supported range.
+    FrequencyOutOfRange,
 }
 
 impl core::error::Error for ConfigError {}
@@ -634,20 +642,23 @@ impl core::error::Error for ConfigError {}
 impl core::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            ConfigError::UnsupportedFrequency => {
-                write!(f, "The requested frequency is not supported")
+            ConfigError::FrequencyOutOfRange => {
+                write!(f, "The requested frequency is not in the supported range")
             }
         }
     }
 }
-
+#[procmacros::doc_replace]
 /// SPI peripheral driver
 ///
-/// ### SPI Initialization
+/// ## Example
+///
 /// ```rust, no_run
-#[doc = crate::before_snippet!()]
-/// # use esp_hal::spi::Mode;
-/// # use esp_hal::spi::master::{Config, Spi};
+/// # {before_snippet}
+/// use esp_hal::spi::{
+///     Mode,
+///     master::{Config, Spi},
+/// };
 /// let mut spi = Spi::new(
 ///     peripherals.SPI2,
 ///     Config::default()
@@ -657,8 +668,7 @@ impl core::fmt::Display for ConfigError {
 /// .with_sck(peripherals.GPIO0)
 /// .with_mosi(peripherals.GPIO1)
 /// .with_miso(peripherals.GPIO2);
-/// # Ok(())
-/// # }
+/// # {after_snippet}
 /// ```
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -672,58 +682,75 @@ pub struct Spi<'d, Dm: DriverMode> {
 impl<Dm: DriverMode> Sealed for Spi<'_, Dm> {}
 
 impl<'d> Spi<'d, Blocking> {
+    #[procmacros::doc_replace]
     /// Constructs an SPI instance in 8bit dataframe mode.
     ///
-    /// # Errors
+    /// ## Errors
     ///
     /// See [`Spi::apply_config`].
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?
+    ///     .with_sck(peripherals.GPIO0)
+    ///     .with_mosi(peripherals.GPIO1)
+    ///     .with_miso(peripherals.GPIO2);
+    /// # {after_snippet}
+    /// ```
     pub fn new(spi: impl Instance + 'd, config: Config) -> Result<Self, ConfigError> {
         let guard = PeripheralGuard::new(spi.info().peripheral);
 
-        let mosi_pin = PinGuard::new_unconnected(spi.info().mosi);
-        let sclk_pin = PinGuard::new_unconnected(spi.info().sclk);
-        let cs_pin = PinGuard::new_unconnected(spi.info().cs[0]);
-        let sio1_pin = PinGuard::new_unconnected(spi.info().sio1_output);
-        let sio2_pin = spi.info().sio2_output.map(PinGuard::new_unconnected);
-        let sio3_pin = spi.info().sio3_output.map(PinGuard::new_unconnected);
-
         let mut this = Spi {
-            spi: spi.degrade(),
             _mode: PhantomData,
             guard,
             pins: SpiPinGuard {
-                mosi_pin,
-                sclk_pin,
-                cs_pin,
-                sio1_pin,
-                sio2_pin,
-                sio3_pin,
+                sclk_pin: PinGuard::new_unconnected(spi.info().sclk),
+                cs_pin: PinGuard::new_unconnected(spi.info().cs(0)),
+                sio0_pin: PinGuard::new_unconnected(spi.info().sio_output(0)),
+                sio1_pin: PinGuard::new_unconnected(spi.info().sio_output(1)),
+                sio2_pin: spi.info().opt_sio_output(2).map(PinGuard::new_unconnected),
+                sio3_pin: spi.info().opt_sio_output(3).map(PinGuard::new_unconnected),
+                #[cfg(spi_master_has_octal)]
+                sio4_pin: spi.info().opt_sio_output(4).map(PinGuard::new_unconnected),
+                #[cfg(spi_master_has_octal)]
+                sio5_pin: spi.info().opt_sio_output(5).map(PinGuard::new_unconnected),
+                #[cfg(spi_master_has_octal)]
+                sio6_pin: spi.info().opt_sio_output(6).map(PinGuard::new_unconnected),
+                #[cfg(spi_master_has_octal)]
+                sio7_pin: spi.info().opt_sio_output(7).map(PinGuard::new_unconnected),
             },
+            spi: spi.degrade(),
         };
 
         this.driver().init();
         this.apply_config(&config)?;
 
-        let this = this
-            .with_sio0(NoPin)
-            .with_sio1(NoPin)
-            .with_sck(NoPin)
-            .with_cs(NoPin);
+        let this = this.with_sck(NoPin).with_cs(NoPin);
 
-        let is_qspi = this.driver().info.sio2_input.is_some();
-        if is_qspi {
-            unwrap!(this.driver().info.sio2_input).connect_to(&NoPin);
-            unwrap!(this.driver().info.sio2_output).connect_to(&NoPin);
-            unwrap!(this.driver().info.sio3_input).connect_to(&NoPin);
-            unwrap!(this.driver().info.sio3_output).connect_to(&NoPin);
+        for sio in 0..8 {
+            if let Some(signal) = this.driver().info.opt_sio_input(sio) {
+                signal.connect_to(&NoPin);
+            }
+            if let Some(signal) = this.driver().info.opt_sio_output(sio) {
+                signal.connect_to(&NoPin);
+            }
         }
 
         Ok(this)
     }
 
-    /// Converts the SPI instance into async mode.
+    /// Reconfigures the driver to operate in [`Async`] mode.
+    ///
+    /// See the [`Async`] documentation for an example on how to use this
+    /// method.
     pub fn into_async(mut self) -> Spi<'d, Async> {
-        self.set_interrupt_handler(self.spi.handler());
+        self.set_interrupt_handler(self.spi.info().async_handler);
         Spi {
             spi: self.spi,
             _mode: PhantomData,
@@ -732,34 +759,33 @@ impl<'d> Spi<'d, Blocking> {
         }
     }
 
+    #[doc_replace(
+        "dma_channel" => {
+            cfg(any(esp32, esp32s2)) => "let dma_channel = peripherals.DMA_SPI2;",
+            _ => "let dma_channel = peripherals.DMA_CH0;",
+        }
+    )]
     /// Configures the SPI instance to use DMA with the specified channel.
     ///
     /// This method prepares the SPI instance for DMA transfers using SPI
     /// and returns an instance of `SpiDma` that supports DMA
     /// operations.
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
-    /// # use esp_hal::spi::Mode;
-    /// # use esp_hal::spi::master::{Config, Spi};
-    /// # use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
-    /// # use esp_hal::dma_buffers;
-    #[cfg_attr(any(esp32, esp32s2), doc = "let dma_channel = peripherals.DMA_SPI2;")]
-    #[cfg_attr(
-        not(any(esp32, esp32s2)),
-        doc = "let dma_channel = peripherals.DMA_CH0;"
-    )]
-    /// let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
-    ///     dma_buffers!(32000);
+    /// # {before_snippet}
+    /// use esp_hal::{
+    ///     dma::{DmaRxBuf, DmaTxBuf},
+    ///     dma_buffers,
+    ///     spi::{
+    ///         Mode,
+    ///         master::{Config, Spi},
+    ///     },
+    /// };
+    /// # {dma_channel}
+    /// let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(32000);
     ///
-    /// let dma_rx_buf = DmaRxBuf::new(
-    ///     rx_descriptors,
-    ///     rx_buffer
-    /// )?;
+    /// let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer)?;
     ///
-    /// let dma_tx_buf = DmaTxBuf::new(
-    ///     tx_descriptors,
-    ///     tx_buffer
-    /// )?;
+    /// let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer)?;
     ///
     /// let mut spi = Spi::new(
     ///     peripherals.SPI2,
@@ -769,23 +795,21 @@ impl<'d> Spi<'d, Blocking> {
     /// )?
     /// .with_dma(dma_channel)
     /// .with_buffers(dma_rx_buf, dma_tx_buf);
-    /// # Ok(())
-    /// # }
+    /// # {after_snippet}
     /// ```
     #[instability::unstable]
     pub fn with_dma(self, channel: impl DmaChannelFor<AnySpi<'d>>) -> SpiDma<'d, Blocking> {
         SpiDma::new(self.spi, self.pins, channel.degrade())
     }
 
-    #[cfg_attr(
-        not(multi_core),
-        doc = "Registers an interrupt handler for the peripheral."
+    #[doc_replace(
+        "header" => {
+            cfg(multi_core) => "Registers an interrupt handler for the peripheral on the current core.",
+            _ => "Registers an interrupt handler for the peripheral.",
+        }
     )]
-    #[cfg_attr(
-        multi_core,
-        doc = "Registers an interrupt handler for the peripheral on the current core."
-    )]
-    #[doc = ""]
+    /// # {header}
+    ///
     /// Note that this will replace any previously registered interrupt
     /// handlers.
     ///
@@ -798,12 +822,7 @@ impl<'d> Spi<'d, Blocking> {
     /// `None`)
     #[instability::unstable]
     pub fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
-        let interrupt = self.driver().info.interrupt;
-        for core in Cpu::other() {
-            crate::interrupt::disable(core, interrupt);
-        }
-        unsafe { crate::interrupt::bind_interrupt(interrupt, handler.handler()) };
-        unwrap!(crate::interrupt::enable(interrupt, handler.priority()));
+        self.spi.set_interrupt_handler(handler);
     }
 }
 
@@ -813,14 +832,17 @@ impl crate::interrupt::InterruptConfigurable for Spi<'_, Blocking> {
     ///
     /// Interrupts are not enabled at the peripheral level here.
     fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
-        Spi::set_interrupt_handler(self, handler);
+        self.set_interrupt_handler(handler);
     }
 }
 
 impl<'d> Spi<'d, Async> {
-    /// Converts the SPI instance into blocking mode.
+    /// Reconfigures the driver to operate in [`Blocking`] mode.
+    ///
+    /// See the [`Blocking`] documentation for an example on how to use this
+    /// method.
     pub fn into_blocking(self) -> Spi<'d, Blocking> {
-        crate::interrupt::disable(Cpu::current(), self.driver().info.interrupt);
+        self.spi.disable_peri_interrupt();
         Spi {
             spi: self.spi,
             _mode: PhantomData,
@@ -829,17 +851,60 @@ impl<'d> Spi<'d, Async> {
         }
     }
 
+    #[procmacros::doc_replace]
     /// Waits for the completion of previous operations.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?
+    ///     .with_sck(peripherals.GPIO0)
+    ///     .with_mosi(peripherals.GPIO1)
+    ///     .with_miso(peripherals.GPIO2)
+    ///     .into_async();
+    ///
+    /// let mut buffer = [0; 10];
+    /// spi.transfer_in_place_async(&mut buffer).await?;
+    /// spi.flush_async().await?;
+    ///
+    /// # {after_snippet}
+    /// ```
     pub async fn flush_async(&mut self) -> Result<(), Error> {
         self.driver().flush_async().await
     }
 
+    #[procmacros::doc_replace]
     /// Sends `words` to the slave. Returns the `words` received from the slave.
     ///
     /// This function aborts the transfer when its Future is dropped. Some
     /// amount of data may have been transferred before the Future is
     /// dropped. Dropping the future may block for a short while to ensure
     /// the transfer is aborted.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?
+    ///     .with_sck(peripherals.GPIO0)
+    ///     .with_mosi(peripherals.GPIO1)
+    ///     .with_miso(peripherals.GPIO2)
+    ///     .into_async();
+    ///
+    /// let mut buffer = [0; 10];
+    /// spi.transfer_in_place_async(&mut buffer).await?;
+    ///
+    /// # {after_snippet}
+    /// ```
     pub async fn transfer_in_place_async(&mut self, words: &mut [u8]) -> Result<(), Error> {
         // We need to flush because the blocking transfer functions may return while a
         // transfer is still in progress.
@@ -849,17 +914,28 @@ impl<'d> Spi<'d, Async> {
     }
 }
 
+macro_rules! def_with_sio_pin {
+    ($fn:ident, $field:ident, $n:literal) => {
+        #[doc = concat!(" Assign the SIO", stringify!($n), " pin for the SPI instance.")]
+        #[doc = " "]
+        #[doc = " Enables both input and output functionality for the pin, and connects it"]
+        #[doc = concat!(" to the SIO", stringify!($n), " output and input signals.")]
+        #[instability::unstable]
+        pub fn $fn(mut self, sio: impl PeripheralOutput<'d>) -> Self {
+            self.pins.$field = Some(self.connect_sio_pin(sio.into(), $n));
+
+            self
+        }
+    };
+}
+
 impl<'d, Dm> Spi<'d, Dm>
 where
     Dm: DriverMode,
 {
-    fn connect_sio_pin(
-        &self,
-        pin: impl PeripheralOutput<'d>,
-        in_signal: InputSignal,
-        out_signal: OutputSignal,
-    ) -> PinGuard {
-        let pin = pin.into();
+    fn connect_sio_pin(&self, pin: interconnect::OutputSignal<'d>, n: usize) -> PinGuard {
+        let in_signal = self.spi.info().sio_input(n);
+        let out_signal = self.spi.info().sio_output(n);
 
         pin.apply_input_config(&InputConfig::default());
         pin.apply_output_config(&OutputConfig::default());
@@ -871,27 +947,50 @@ where
         pin.connect_with_guard(out_signal)
     }
 
-    fn connect_output_pin(&self, pin: impl PeripheralOutput<'d>, signal: OutputSignal) -> PinGuard {
-        let pin = pin.into();
+    fn connect_sio_output_pin(&self, pin: interconnect::OutputSignal<'d>, n: usize) -> PinGuard {
+        let out_signal = self.spi.info().sio_output(n);
 
+        self.connect_output_pin(pin, out_signal)
+    }
+
+    fn connect_output_pin(
+        &self,
+        pin: interconnect::OutputSignal<'d>,
+        signal: OutputSignal,
+    ) -> PinGuard {
         pin.apply_output_config(&OutputConfig::default());
         pin.set_output_enable(true); // TODO turn this bool into a Yes/No/PeripheralControl trio
 
         pin.connect_with_guard(signal)
     }
 
+    #[procmacros::doc_replace]
     /// Assign the SCK (Serial Clock) pin for the SPI instance.
     ///
     /// Configures the specified pin to push-pull output and connects it to the
     /// SPI clock signal.
     ///
     /// Disconnects the previous pin that was assigned with `with_sck`.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?.with_sck(peripherals.GPIO0);
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn with_sck(mut self, sclk: impl PeripheralOutput<'d>) -> Self {
-        self.pins.sclk_pin = self.connect_output_pin(sclk, self.driver().info.sclk);
+        self.pins.sclk_pin = self.connect_output_pin(sclk.into(), self.driver().info.sclk);
 
         self
     }
 
+    #[procmacros::doc_replace]
     /// Assign the MOSI (Master Out Slave In) pin for the SPI instance.
     ///
     /// Enables output functionality for the pin, and connects it as the MOSI
@@ -900,12 +999,26 @@ where
     ///
     /// Disconnects the previous pin that was assigned with `with_mosi` or
     /// `with_sio0`.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?.with_mosi(peripherals.GPIO1);
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn with_mosi(mut self, mosi: impl PeripheralOutput<'d>) -> Self {
-        self.pins.mosi_pin = self.connect_output_pin(mosi, self.driver().info.mosi);
+        self.pins.sio0_pin = self.connect_sio_output_pin(mosi.into(), 0);
 
         self
     }
 
+    #[procmacros::doc_replace]
     /// Assign the MISO (Master In Slave Out) pin for the SPI instance.
     ///
     /// Enables input functionality for the pin, and connects it to the MISO
@@ -913,13 +1026,26 @@ where
     ///
     /// You want to use this for full-duplex SPI or
     /// [DataMode::SingleTwoDataLines]
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?.with_miso(peripherals.GPIO2);
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn with_miso(self, miso: impl PeripheralInput<'d>) -> Self {
         let miso = miso.into();
 
         miso.apply_input_config(&InputConfig::default());
         miso.set_input_enable(true);
 
-        self.driver().info.miso.connect_to(&miso);
+        self.driver().info.sio_input(1).connect_to(&miso);
 
         self
     }
@@ -927,20 +1053,18 @@ where
     /// Assign the SIO0 pin for the SPI instance.
     ///
     /// Enables both input and output functionality for the pin, and connects it
-    /// to the MOSI signal and SIO0 input signal.
+    /// to the MOSI output signal and SIO0 input signal.
     ///
     /// Disconnects the previous pin that was assigned with `with_sio0` or
     /// `with_mosi`.
     ///
     /// Use this if any of the devices on the bus use half-duplex SPI.
     ///
-    /// The pin is configured to open-drain mode.
-    ///
-    /// Note: You do not need to call [Self::with_mosi] when this is used.
+    /// See also [Self::with_mosi] when you only need a one-directional MOSI
+    /// signal.
     #[instability::unstable]
     pub fn with_sio0(mut self, mosi: impl PeripheralOutput<'d>) -> Self {
-        self.pins.mosi_pin =
-            self.connect_sio_pin(mosi, self.driver().info.sio0_input, self.driver().info.mosi);
+        self.pins.sio0_pin = self.connect_sio_pin(mosi.into(), 0);
 
         self
     }
@@ -948,55 +1072,35 @@ where
     /// Assign the SIO1/MISO pin for the SPI instance.
     ///
     /// Enables both input and output functionality for the pin, and connects it
-    /// to the MISO signal and SIO1 input signal.
+    /// to the MISO input signal and SIO1 output signal.
     ///
     /// Disconnects the previous pin that was assigned with `with_sio1`.
     ///
     /// Use this if any of the devices on the bus use half-duplex SPI.
     ///
-    /// The pin is configured to open-drain mode.
-    ///
-    /// Note: You do not need to call [Self::with_miso] when this is used.
+    /// See also [Self::with_miso] when you only need a one-directional MISO
+    /// signal.
     #[instability::unstable]
     pub fn with_sio1(mut self, sio1: impl PeripheralOutput<'d>) -> Self {
-        self.pins.sio1_pin = self.connect_sio_pin(
-            sio1,
-            self.driver().info.miso,
-            self.driver().info.sio1_output,
-        );
+        self.pins.sio1_pin = self.connect_sio_pin(sio1.into(), 1);
 
         self
     }
 
-    /// Assign the SIO2 pin for the SPI instance.
-    ///
-    /// Enables both input and output functionality for the pin, and connects it
-    /// to the SIO2 output and input signals.
-    #[instability::unstable]
-    pub fn with_sio2(mut self, sio2: impl PeripheralOutput<'d>) -> Self {
-        self.pins.sio2_pin = Some(self.connect_sio_pin(
-            sio2,
-            unwrap!(self.driver().info.sio2_input),
-            unwrap!(self.driver().info.sio2_output),
-        ));
+    def_with_sio_pin!(with_sio2, sio2_pin, 2);
+    def_with_sio_pin!(with_sio3, sio3_pin, 3);
 
-        self
-    }
+    #[cfg(spi_master_has_octal)]
+    def_with_sio_pin!(with_sio4, sio4_pin, 4);
 
-    /// Assign the SIO3 pin for the SPI instance.
-    ///
-    /// Enables both input and output functionality for the pin, and connects it
-    /// to the SIO3 output and input signals.
-    #[instability::unstable]
-    pub fn with_sio3(mut self, sio3: impl PeripheralOutput<'d>) -> Self {
-        self.pins.sio3_pin = Some(self.connect_sio_pin(
-            sio3,
-            unwrap!(self.driver().info.sio3_input),
-            unwrap!(self.driver().info.sio3_output),
-        ));
+    #[cfg(spi_master_has_octal)]
+    def_with_sio_pin!(with_sio5, sio5_pin, 5);
 
-        self
-    }
+    #[cfg(spi_master_has_octal)]
+    def_with_sio_pin!(with_sio6, sio6_pin, 6);
+
+    #[cfg(spi_master_has_octal)]
+    def_with_sio_pin!(with_sio7, sio7_pin, 7);
 
     /// Assign the CS (Chip Select) pin for the SPI instance.
     ///
@@ -1011,25 +1115,65 @@ where
     /// mechanism to select which CS line to use.
     #[instability::unstable]
     pub fn with_cs(mut self, cs: impl PeripheralOutput<'d>) -> Self {
-        self.pins.cs_pin = self.connect_output_pin(cs, self.driver().info.cs[0]);
+        self.pins.cs_pin = self.connect_output_pin(cs.into(), self.driver().info.cs(0));
         self
     }
 
+    #[doc_replace(
+        "max_frequency" => {
+            cfg(esp32h2) => " 48MHz",
+            _ => " 80MHz",
+        }
+    )]
     /// Change the bus configuration.
     ///
     /// # Errors
     ///
     /// If frequency passed in config exceeds
-    #[cfg_attr(not(esp32h2), doc = " 80MHz")]
-    #[cfg_attr(esp32h2, doc = " 48MHz")]
-    /// or is below 70kHz,
-    /// [`ConfigError::UnsupportedFrequency`] error will be returned.
+    /// # {max_frequency}
+    /// or is below 70kHz, [`ConfigError::FrequencyOutOfRange`] error will be returned.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?;
+    ///
+    /// spi.apply_config(&Config::default().with_frequency(Rate::from_khz(100)));
+    /// #
+    /// # {after_snippet}
+    /// ```
     pub fn apply_config(&mut self, config: &Config) -> Result<(), ConfigError> {
         self.driver().apply_config(config)
     }
 
+    #[procmacros::doc_replace]
     /// Write bytes to SPI. After writing, flush is called to ensure all data
     /// has been transmitted.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?
+    ///     .with_sck(peripherals.GPIO0)
+    ///     .with_mosi(peripherals.GPIO1)
+    ///     .with_miso(peripherals.GPIO2)
+    ///     .into_async();
+    ///
+    /// let buffer = [0; 10];
+    /// spi.write(&buffer)?;
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn write(&mut self, words: &[u8]) -> Result<(), Error> {
         self.driver().setup_full_duplex()?;
         self.driver().write(words)?;
@@ -1038,15 +1182,57 @@ where
         Ok(())
     }
 
+    #[procmacros::doc_replace]
     /// Read bytes from SPI. The provided slice is filled with data received
     /// from the slave.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?
+    ///     .with_sck(peripherals.GPIO0)
+    ///     .with_mosi(peripherals.GPIO1)
+    ///     .with_miso(peripherals.GPIO2)
+    ///     .into_async();
+    ///
+    /// let mut buffer = [0; 10];
+    /// spi.read(&mut buffer)?;
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn read(&mut self, words: &mut [u8]) -> Result<(), Error> {
         self.driver().setup_full_duplex()?;
         self.driver().read(words)
     }
 
+    #[procmacros::doc_replace]
     /// Sends `words` to the slave. The received data will be written to
     /// `words`, overwriting its contents.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::spi::{
+    ///     Mode,
+    ///     master::{Config, Spi},
+    /// };
+    /// let mut spi = Spi::new(peripherals.SPI2, Config::default())?
+    ///     .with_sck(peripherals.GPIO0)
+    ///     .with_mosi(peripherals.GPIO1)
+    ///     .with_miso(peripherals.GPIO2)
+    ///     .into_async();
+    ///
+    /// let mut buffer = [0; 10];
+    /// spi.transfer(&mut buffer)?;
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn transfer(&mut self, words: &mut [u8]) -> Result<(), Error> {
         self.driver().setup_full_duplex()?;
         self.driver().transfer(words)
@@ -1197,6 +1383,12 @@ mod dma {
         spi::master::dma::asynch::DropGuard,
     };
 
+    #[doc_replace(
+        "dma_channel" => {
+            cfg(any(esp32, esp32s2)) => "let dma_channel = peripherals.DMA_SPI2;",
+            _ => "let dma_channel = peripherals.DMA_CH0;",
+        }
+    )]
     /// A DMA capable SPI instance.
     ///
     /// Using `SpiDma` is not recommended unless you wish
@@ -1205,28 +1397,21 @@ mod dma {
     /// to a DMA capable SPI bus that implements the
     /// embedded-hal traits.
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
-    /// # use esp_hal::spi::Mode;
-    /// # use esp_hal::spi::master::{Config, Spi};
-    /// # use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
-    /// # use esp_hal::dma_buffers;
-    #[cfg_attr(any(esp32, esp32s2), doc = "let dma_channel = peripherals.DMA_SPI2;")]
-    #[cfg_attr(
-        not(any(esp32, esp32s2)),
-        doc = "let dma_channel = peripherals.DMA_CH0;"
-    )]
-    /// let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
-    ///     dma_buffers!(32000);
+    /// # {before_snippet}
+    /// use esp_hal::{
+    ///     dma::{DmaRxBuf, DmaTxBuf},
+    ///     dma_buffers,
+    ///     spi::{
+    ///         Mode,
+    ///         master::{Config, Spi},
+    ///     },
+    /// };
+    /// # {dma_channel}
+    /// let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(32000);
     ///
-    /// let dma_rx_buf = DmaRxBuf::new(
-    ///     rx_descriptors,
-    ///     rx_buffer
-    /// )?;
+    /// let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer)?;
     ///
-    /// let dma_tx_buf = DmaTxBuf::new(
-    ///     tx_descriptors,
-    ///     tx_buffer
-    /// )?;
+    /// let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer)?;
     ///
     /// let mut spi = Spi::new(
     ///     peripherals.SPI2,
@@ -1236,8 +1421,8 @@ mod dma {
     /// )?
     /// .with_dma(dma_channel)
     /// .with_buffers(dma_rx_buf, dma_tx_buf);
-    /// # Ok(())
-    /// # }
+    /// #
+    /// # {after_snippet}
     /// ```
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub struct SpiDma<'d, Dm>
@@ -1260,7 +1445,7 @@ mod dma {
         /// Converts the SPI instance into async mode.
         #[instability::unstable]
         pub fn into_async(mut self) -> SpiDma<'d, Async> {
-            self.set_interrupt_handler(self.spi.handler());
+            self.set_interrupt_handler(self.spi.info().async_handler);
             SpiDma {
                 spi: self.spi,
                 channel: self.channel.into_async(),
@@ -1359,12 +1544,7 @@ mod dma {
         /// `None`)
         #[instability::unstable]
         pub fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
-            let interrupt = self.driver().info.interrupt;
-            for core in Cpu::other() {
-                crate::interrupt::disable(core, interrupt);
-            }
-            unsafe { crate::interrupt::bind_interrupt(interrupt, handler.handler()) };
-            unwrap!(crate::interrupt::enable(interrupt, handler.priority()));
+            self.spi.set_interrupt_handler(handler);
         }
     }
 
@@ -1372,7 +1552,7 @@ mod dma {
         /// Converts the SPI instance into async mode.
         #[instability::unstable]
         pub fn into_blocking(self) -> SpiDma<'d, Blocking> {
-            crate::interrupt::disable(Cpu::current(), self.driver().info.interrupt);
+            self.spi.disable_peri_interrupt();
             SpiDma {
                 spi: self.spi,
                 channel: self.channel.into_blocking(),
@@ -1454,12 +1634,7 @@ mod dma {
         ///
         /// Interrupts are not enabled at the peripheral level here.
         fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
-            let interrupt = self.driver().info.interrupt;
-            for core in crate::system::Cpu::other() {
-                crate::interrupt::disable(core, interrupt);
-            }
-            unsafe { crate::interrupt::bind_interrupt(interrupt, handler.handler()) };
-            unwrap!(crate::interrupt::enable(interrupt, handler.priority()));
+            self.set_interrupt_handler(handler);
         }
     }
 
@@ -2469,10 +2644,10 @@ mod dma {
     }
 
     mod ehal1 {
-        #[cfg(any(doc, feature = "unstable"))]
+        #[cfg(feature = "unstable")]
         use embedded_hal::spi::{ErrorType, SpiBus};
 
-        #[cfg(any(doc, feature = "unstable"))]
+        #[cfg(feature = "unstable")]
         use super::*;
 
         #[instability::unstable]
@@ -2665,16 +2840,30 @@ mod ehal1 {
 }
 
 /// SPI peripheral instance.
-#[doc(hidden)]
-#[allow(private_bounds)]
-pub trait PeripheralInstance: private::Sealed + DmaEligible {
-    /// Returns the peripheral data describing this SPI instance.
-    fn info(&self) -> &'static Info;
+#[cfg_attr(not(feature = "unstable"), expect(private_bounds))] // DmaEligible
+pub trait Instance: private::Sealed + any::Degrade + DmaEligible {
+    #[doc(hidden)]
+    /// Returns the peripheral data and state describing this instance.
+    fn parts(&self) -> (&'static Info, &'static State);
+
+    /// Returns the peripheral data describing this instance.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn info(&self) -> &'static Info {
+        self.parts().0
+    }
+
+    /// Returns the peripheral state for this instance.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn state(&self) -> &'static State {
+        self.parts().1
+    }
 }
 
 /// Marker trait for QSPI-capable SPI peripherals.
 #[doc(hidden)]
-pub trait QspiInstance: PeripheralInstance {}
+pub trait QspiInstance: Instance {}
 
 /// Peripheral data describing a particular SPI instance.
 #[doc(hidden)]
@@ -2688,70 +2877,39 @@ pub struct Info {
     /// The system peripheral marker.
     pub peripheral: crate::system::Peripheral,
 
-    /// Interrupt for this SPI instance.
-    pub interrupt: crate::peripherals::Interrupt,
+    /// Interrupt handler for the asynchronous operations.
+    pub async_handler: InterruptHandler,
 
     /// SCLK signal.
     pub sclk: OutputSignal,
 
-    /// MOSI signal.
-    pub mosi: OutputSignal,
-
-    /// MISO signal.
-    pub miso: InputSignal,
-
     /// Chip select signals.
     pub cs: &'static [OutputSignal],
 
-    /// SIO0 (MOSI) input signal for half-duplex mode.
-    pub sio0_input: InputSignal,
+    pub sio_inputs: &'static [InputSignal],
+    pub sio_outputs: &'static [OutputSignal],
+}
 
-    /// SIO1 (MISO) output signal for half-duplex mode.
-    pub sio1_output: OutputSignal,
+impl Info {
+    fn cs(&self, n: usize) -> OutputSignal {
+        *unwrap!(self.cs.get(n), "CS{} is not defined", n)
+    }
 
-    /// SIO2 output signal for QSPI mode.
-    pub sio2_output: Option<OutputSignal>,
+    fn opt_sio_input(&self, n: usize) -> Option<InputSignal> {
+        self.sio_inputs.get(n).copied()
+    }
 
-    /// SIO2 input signal for QSPI mode.
-    pub sio2_input: Option<InputSignal>,
+    fn opt_sio_output(&self, n: usize) -> Option<OutputSignal> {
+        self.sio_outputs.get(n).copied()
+    }
 
-    /// SIO3 output signal for QSPI mode.
-    pub sio3_output: Option<OutputSignal>,
+    fn sio_input(&self, n: usize) -> InputSignal {
+        unwrap!(self.opt_sio_input(n), "SIO{} is not defined", n)
+    }
 
-    /// SIO3 input signal for QSPI mode.
-    pub sio3_input: Option<InputSignal>,
-
-    /// SIO4 output signal for OPI mode.
-    #[cfg(spi_octal)]
-    pub sio4_output: Option<OutputSignal>,
-
-    /// SIO4 input signal for OPI mode.
-    #[cfg(spi_octal)]
-    pub sio4_input: Option<InputSignal>,
-
-    /// SIO5 output signal for OPI mode.
-    #[cfg(spi_octal)]
-    pub sio5_output: Option<OutputSignal>,
-
-    /// SIO5 input signal for OPI mode.
-    #[cfg(spi_octal)]
-    pub sio5_input: Option<InputSignal>,
-
-    /// SIO6 output signal for OPI mode.
-    #[cfg(spi_octal)]
-    pub sio6_output: Option<OutputSignal>,
-
-    /// SIO6 input signal for OPI mode.
-    #[cfg(spi_octal)]
-    pub sio6_input: Option<InputSignal>,
-
-    /// SIO7 output signal for OPI mode.
-    #[cfg(spi_octal)]
-    pub sio7_output: Option<OutputSignal>,
-
-    /// SIO7 input signal for OPI mode.
-    #[cfg(spi_octal)]
-    pub sio7_input: Option<InputSignal>,
+    fn sio_output(&self, n: usize) -> OutputSignal {
+        unwrap!(self.opt_sio_output(n), "SIO{} is not defined", n)
+    }
 }
 
 struct DmaDriver {
@@ -2769,7 +2927,6 @@ impl DmaDriver {
         self.driver.regs()
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[cfg_attr(place_spi_master_driver_in_ram, ram)]
     unsafe fn start_transfer_dma<Dm: DriverMode>(
         &self,
@@ -3328,16 +3485,16 @@ impl Driver {
             }
         }
         let rem = c_iter.remainder();
-        if !rem.is_empty() {
-            if let Some(w_reg) = w_iter.next() {
-                let word = match rem.len() {
-                    3 => (rem[0] as u32) | ((rem[1] as u32) << 8) | ((rem[2] as u32) << 16),
-                    2 => (rem[0] as u32) | ((rem[1] as u32) << 8),
-                    1 => rem[0] as u32,
-                    _ => unreachable!(),
-                };
-                w_reg.write(|w| w.buf().set(word));
-            }
+        if !rem.is_empty()
+            && let Some(w_reg) = w_iter.next()
+        {
+            let word = match rem.len() {
+                3 => (rem[0] as u32) | ((rem[1] as u32) << 8) | ((rem[2] as u32) << 16),
+                2 => (rem[0] as u32) | ((rem[1] as u32) << 8),
+                1 => rem[0] as u32,
+                _ => unreachable!(),
+            };
+            w_reg.write(|w| w.buf().set(word));
         }
     }
 
@@ -3538,7 +3695,7 @@ impl Driver {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn setup_half_duplex(
         &self,
         is_write: bool,
@@ -3713,95 +3870,49 @@ impl PartialEq for Info {
 
 unsafe impl Sync for Info {}
 
-// TODO: this macro needs to move to one level up, and it needs to describe the
-// hardware fully. The master module should extend it with the master specific
-// details.
-macro_rules! spi_instance {
-    ($num:literal, $sclk:ident, $mosi:ident, $miso:ident, [$($cs:ident),+] $(, $sio2:ident, $sio3:ident $(, $sio4:ident, $sio5:ident, $sio6:ident, $sio7:ident)?)?) => {
-        paste::paste! {
-            impl PeripheralInstance for crate::peripherals::[<SPI $num>]<'_> {
-                #[inline(always)]
-                fn info(&self) -> &'static Info {
-                    static INFO: Info = Info {
-                        register_block: crate::peripherals::[<SPI $num>]::regs(),
-                        peripheral: crate::system::Peripheral::[<Spi $num>],
-                        interrupt: crate::peripherals::Interrupt::[<SPI $num>],
-                        sclk: OutputSignal::$sclk,
-                        mosi: OutputSignal::$mosi,
-                        miso: InputSignal::$miso,
-                        cs: &[$(OutputSignal::$cs),+],
-                        sio0_input: InputSignal::$mosi,
-                        sio1_output: OutputSignal::$miso,
-                        sio2_output: $crate::if_set!($(Some(OutputSignal::$sio2))?, None),
-                        sio2_input: $crate::if_set!($(Some(InputSignal::$sio2))?, None),
-                        sio3_output: $crate::if_set!($(Some(OutputSignal::$sio3))?, None),
-                        sio3_input: $crate::if_set!($(Some(InputSignal::$sio3))?, None),
-                        #[cfg(spi_octal)]
-                        sio4_output: $crate::if_set!($($(Some(OutputSignal::$sio4))?)?, None),
-                        #[cfg(spi_octal)]
-                        sio4_input: $crate::if_set!($($(Some(InputSignal::$sio4))?)?, None),
-                        #[cfg(spi_octal)]
-                        sio5_output: $crate::if_set!($($(Some(OutputSignal::$sio5))?)?, None),
-                        #[cfg(spi_octal)]
-                        sio5_input: $crate::if_set!($($(Some(InputSignal::$sio5))?)?, None),
-                        #[cfg(spi_octal)]
-                        sio6_output: $crate::if_set!($($(Some(OutputSignal::$sio6))?)?, None),
-                        #[cfg(spi_octal)]
-                        sio6_input: $crate::if_set!($($(Some(InputSignal::$sio6))?)?, None),
-                        #[cfg(spi_octal)]
-                        sio7_output: $crate::if_set!($($(Some(OutputSignal::$sio7))?)?, None),
-                        #[cfg(spi_octal)]
-                        sio7_input: $crate::if_set!($($(Some(InputSignal::$sio7))?)?, None),
-                    };
-
-                    &INFO
+for_each_spi_master! {
+    ($peri:ident, $sys:ident, $sclk:ident [$($cs:ident),+] [$($sio:ident),*] $(, $is_qspi:tt)?) => {
+        impl Instance for crate::peripherals::$peri<'_> {
+            #[inline(always)]
+            fn parts(&self) -> (&'static Info, &'static State) {
+                #[crate::handler]
+                #[cfg_attr(place_spi_master_driver_in_ram, ram)]
+                fn irq_handler() {
+                    handle_async(&INFO, &STATE)
                 }
+
+                static INFO: Info = Info {
+                    register_block: crate::peripherals::$peri::regs(),
+                    peripheral: crate::system::Peripheral::$sys,
+                    async_handler: irq_handler,
+                    sclk: OutputSignal::$sclk,
+                    cs: &[$(OutputSignal::$cs),+],
+                    sio_inputs: &[$(InputSignal::$sio),*],
+                    sio_outputs: &[$(OutputSignal::$sio),*],
+                };
+
+                static STATE: State = State {
+                    waker: AtomicWaker::new(),
+                    #[cfg(esp32)]
+                    esp32_hack: Esp32Hack {
+                        timing_miso_delay: Cell::new(None),
+                        extra_dummy: Cell::new(0),
+                    },
+                };
+
+                (&INFO, &STATE)
             }
-
-            $(
-                // If the extra pins are set, implement QspiInstance
-                $crate::ignore!($sio2);
-                impl QspiInstance for crate::peripherals::[<SPI $num>]<'_> {}
-            )?
         }
-    }
+
+        $(
+            // If the extra pins are set, implement QspiInstance
+            $crate::ignore!($is_qspi);
+            impl QspiInstance for crate::peripherals::$peri<'_> {}
+        )?
+    };
 }
 
-#[cfg(spi2)]
-cfg_if::cfg_if! {
-    if #[cfg(esp32)] {
-        spi_instance!(2, HSPICLK, HSPID, HSPIQ, [HSPICS0, HSPICS1, HSPICS2], HSPIWP, HSPIHD);
-    } else if #[cfg(any(esp32s2, esp32s3))] {
-        spi_instance!(2, FSPICLK, FSPID, FSPIQ, [FSPICS0, FSPICS1, FSPICS2, FSPICS3, FSPICS4, FSPICS5], FSPIWP, FSPIHD, FSPIIO4, FSPIIO5, FSPIIO6, FSPIIO7);
-    } else {
-        spi_instance!(2, FSPICLK_MUX, FSPID, FSPIQ, [FSPICS0, FSPICS1, FSPICS2, FSPICS3, FSPICS4, FSPICS5], FSPIWP, FSPIHD);
-    }
-}
-
-#[cfg(spi3)]
-cfg_if::cfg_if! {
-    if #[cfg(esp32)] {
-        spi_instance!(3, VSPICLK, VSPID, VSPIQ, [VSPICS0, VSPICS1, VSPICS2], VSPIWP, VSPIHD);
-    } else if #[cfg(esp32s3)] {
-        spi_instance!(3, SPI3_CLK, SPI3_D, SPI3_Q, [SPI3_CS0, SPI3_CS1, SPI3_CS2], SPI3_WP, SPI3_HD);
-    } else {
-        spi_instance!(3, SPI3_CLK, SPI3_D, SPI3_Q, [SPI3_CS0, SPI3_CS1, SPI3_CS2]);
-    }
-}
-
-impl PeripheralInstance for super::AnySpi<'_> {
-    delegate::delegate! {
-        to match &self.0 {
-            super::AnySpiInner::Spi2(spi) => spi,
-            #[cfg(spi3)]
-            super::AnySpiInner::Spi3(spi) => spi,
-        } {
-            fn info(&self) -> &'static Info;
-        }
-    }
-}
-
-impl QspiInstance for super::AnySpi<'_> {}
+impl QspiInstance for AnySpi<'_> {}
 
 #[doc(hidden)]
 pub struct State {
@@ -3821,10 +3932,7 @@ struct Esp32Hack {
 unsafe impl Sync for Esp32Hack {}
 
 #[cfg_attr(place_spi_master_driver_in_ram, ram)]
-fn handle_async(instance: impl Instance) {
-    let state = instance.state();
-    let info = instance.info();
-
+fn handle_async(info: &'static Info, state: &'static State) {
     let driver = Driver { info, state };
     if driver.interrupts().contains(SpiInterrupt::TransferDone) {
         driver.enable_listen(SpiInterrupt::TransferDone.into(), false);
@@ -3832,57 +3940,74 @@ fn handle_async(instance: impl Instance) {
     }
 }
 
-/// A peripheral singleton compatible with the SPI master driver.
-pub trait Instance: PeripheralInstance + super::IntoAnySpi {
-    #[doc(hidden)]
-    fn state(&self) -> &'static State;
-    #[doc(hidden)]
-    fn handler(&self) -> InterruptHandler;
+/// SPI data mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[instability::unstable]
+pub enum DataMode {
+    /// 1 bit, two data lines. (MOSI, MISO)
+    SingleTwoDataLines,
+    /// 1 bit, 1 data line (SIO0)
+    Single,
+    /// 2 bits, two data lines. (SIO0, SIO1)
+    Dual,
+    /// 4 bit, 4 data lines. (SIO0 .. SIO3)
+    Quad,
+    #[cfg(spi_master_has_octal)]
+    /// 8 bit, 8 data lines. (SIO0 .. SIO7)
+    Octal,
 }
 
-macro_rules! master_instance {
-    ($peri:ident) => {
-        impl Instance for $crate::peripherals::$peri<'_> {
-            fn state(&self) -> &'static State {
-                static STATE: State = State {
-                    waker: AtomicWaker::new(),
-                    #[cfg(esp32)]
-                    esp32_hack: Esp32Hack {
-                        timing_miso_delay: Cell::new(None),
-                        extra_dummy: Cell::new(0),
-                    },
-                };
-
-                &STATE
-            }
-
-            fn handler(&self) -> InterruptHandler {
-                #[$crate::handler]
-                #[cfg_attr(place_spi_master_driver_in_ram, ram)]
-                fn handle() {
-                    handle_async(unsafe { $crate::peripherals::$peri::steal() })
-                }
-
-                handle
-            }
-        }
-    };
+crate::any_peripheral! {
+    /// Any SPI peripheral.
+    pub peripheral AnySpi<'d> {
+        #[cfg(spi_master_spi2)]
+        Spi2(crate::peripherals::SPI2<'d>),
+        #[cfg(spi_master_spi3)]
+        Spi3(crate::peripherals::SPI3<'d>),
+    }
 }
 
-master_instance!(SPI2);
-#[cfg(spi3)]
-master_instance!(SPI3);
+impl<'d> DmaEligible for AnySpi<'d> {
+    #[cfg(gdma)]
+    type Dma = crate::dma::AnyGdmaChannel<'d>;
+    #[cfg(pdma)]
+    type Dma = crate::dma::AnySpiDmaChannel<'d>;
 
-impl Instance for super::AnySpi<'_> {
-    delegate::delegate! {
-        to match &self.0 {
-            super::AnySpiInner::Spi2(spi) => spi,
-            #[cfg(spi3)]
-            super::AnySpiInner::Spi3(spi) => spi,
-        } {
-            fn state(&self) -> &'static State;
-            fn handler(&self) -> InterruptHandler;
+    fn dma_peripheral(&self) -> crate::dma::DmaPeripheral {
+        match &self.0 {
+            #[cfg(spi_master_spi2)]
+            any::Inner::Spi2(_) => crate::dma::DmaPeripheral::Spi2,
+            #[cfg(spi_master_spi3)]
+            any::Inner::Spi3(_) => crate::dma::DmaPeripheral::Spi3,
         }
+    }
+}
+
+impl Instance for AnySpi<'_> {
+    #[inline]
+    fn parts(&self) -> (&'static Info, &'static State) {
+        any::delegate!(self, spi => { spi.parts() })
+    }
+}
+
+impl AnySpi<'_> {
+    fn bind_peri_interrupt(&self, handler: unsafe extern "C" fn() -> ()) {
+        any::delegate!(self, spi => { spi.bind_peri_interrupt(handler) })
+    }
+
+    fn disable_peri_interrupt(&self) {
+        any::delegate!(self, spi => { spi.disable_peri_interrupt() })
+    }
+
+    fn enable_peri_interrupt(&self, priority: crate::interrupt::Priority) {
+        any::delegate!(self, spi => { spi.enable_peri_interrupt(priority) })
+    }
+
+    fn set_interrupt_handler(&self, handler: InterruptHandler) {
+        self.disable_peri_interrupt();
+        self.bind_peri_interrupt(handler.handler());
+        self.enable_peri_interrupt(handler.priority());
     }
 }
 

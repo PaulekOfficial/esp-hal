@@ -1,11 +1,14 @@
 //! Embassy BLE Example
 //!
 //! - starts Bluetooth advertising
-//! - offers one service with three characteristics (one is read/write, one is write only, one is read/write/notify)
+//! - offers one service with three characteristics (one is read/write, one is write only, one is
+//!   read/write/notify)
 //! - pressing the boot-button on a dev-board will send a notification if it is subscribed
 
 //% FEATURES: embassy esp-wifi esp-wifi/ble esp-hal/unstable
 //% CHIPS: esp32 esp32s3 esp32c2 esp32c3 esp32c6 esp32h2
+
+// Embassy offers another compatible BLE crate [trouble](https://github.com/embassy-rs/trouble/tree/main/examples/esp32) with esp32 examples.
 
 #![no_std]
 #![no_main]
@@ -30,12 +33,13 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
     gpio::{Input, InputConfig, Pull},
-    rng::Rng,
     time,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
 use esp_wifi::{EspWifiController, ble::controller::BleConnector, init};
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -57,15 +61,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let esp_wifi_ctrl = &*mk_static!(
-        EspWifiController<'static>,
-        init(
-            timg0.timer0,
-            Rng::new(peripherals.RNG),
-            peripherals.RADIO_CLK,
-        )
-        .unwrap()
-    );
+    let esp_wifi_ctrl = &*mk_static!(EspWifiController<'static>, init(timg0.timer0).unwrap());
 
     let config = InputConfig::default().with_pull(Pull::Down);
     cfg_if::cfg_if! {

@@ -21,10 +21,12 @@ use esp_hal::{
     Blocking,
     clock::CpuClock,
     ecc::{Ecc, EllipticCurve, Error},
-    rng::Rng,
+    rng::{Rng, TrngSource},
 };
 use hex_literal::hex;
 use hil_test as _;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 struct TestParams<'a> {
     prime_fields: &'a [&'a [u8]],
@@ -45,7 +47,7 @@ const TEST_PARAMS_VECTOR: TestParams = TestParams {
 
 struct Context<'a> {
     ecc: Ecc<'a, Blocking>,
-    rng: Rng,
+    _rng_source: TrngSource<'a>,
 }
 
 #[cfg(test)]
@@ -56,17 +58,17 @@ mod tests {
     #[init]
     fn init() -> Context<'static> {
         let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-        let peripherals = esp_hal::init(config);
+        let p = esp_hal::init(config);
 
-        let ecc = Ecc::new(peripherals.ECC);
-        let rng = Rng::new(peripherals.RNG);
-
-        Context { ecc, rng }
+        Context {
+            ecc: Ecc::new(p.ECC),
+            _rng_source: TrngSource::new(p.RNG, p.ADC1),
+        }
     }
 
     #[test]
-    #[timeout(5)]
     fn test_ecc_affine_point_multiplication(mut ctx: Context<'static>) {
+        let rng = Rng::new();
         for &prime_field in TEST_PARAMS_VECTOR.prime_fields {
             match prime_field.len() {
                 24 => (),
@@ -78,7 +80,7 @@ mod tests {
             let (y, _) = y.split_at_mut(prime_field.len());
             for _ in 0..TEST_PARAMS_VECTOR.nb_loop_mul {
                 loop {
-                    ctx.rng.read(k);
+                    rng.read(k);
                     let is_zero = k.iter().all(|&elt| elt == 0);
                     let is_modulus = k.iter().zip(prime_field).all(|(&a, &b)| a == b);
                     if is_zero == false && is_modulus == false {
@@ -167,6 +169,7 @@ mod tests {
 
     #[test]
     fn test_ecc_affine_point_verification(mut ctx: Context<'static>) {
+        let rng = Rng::new();
         for &prime_field in TEST_PARAMS_VECTOR.prime_fields {
             let t1 = &mut [0_u8; 96];
             let (k, x) = t1.split_at_mut(prime_field.len());
@@ -174,7 +177,7 @@ mod tests {
             let (y, _) = y.split_at_mut(prime_field.len());
             for _ in 0..TEST_PARAMS_VECTOR.nb_loop_mul {
                 loop {
-                    ctx.rng.read(k);
+                    rng.read(k);
                     let is_zero = k.iter().all(|&elt| elt == 0);
                     let is_modulus = k.iter().zip(prime_field).all(|(&a, &b)| a == b);
                     if is_zero == false && is_modulus == false {
@@ -227,6 +230,7 @@ mod tests {
 
     #[test]
     fn test_ecc_afine_point_verification_multiplication(mut ctx: Context<'static>) {
+        let rng = Rng::new();
         for &prime_field in TEST_PARAMS_VECTOR.prime_fields {
             let t1 = &mut [0_u8; 96];
             let (k, px) = t1.split_at_mut(prime_field.len());
@@ -240,7 +244,7 @@ mod tests {
             let qz = &mut [0u8; 8];
             for _ in 0..TEST_PARAMS_VECTOR.nb_loop_mul {
                 loop {
-                    ctx.rng.read(k);
+                    rng.read(k);
                     let is_zero = k.iter().all(|&elt| elt == 0);
                     let is_modulus = k.iter().zip(prime_field).all(|(&a, &b)| a == b);
                     if is_zero == false && is_modulus == false {
@@ -344,6 +348,7 @@ mod tests {
     }
     #[test]
     fn test_ecc_jacobian_point_multiplication(mut ctx: Context<'static>) {
+        let rng = Rng::new();
         for &prime_field in TEST_PARAMS_VECTOR.prime_fields {
             let t1 = &mut [0_u8; 96];
             let (k, x) = t1.split_at_mut(prime_field.len());
@@ -357,7 +362,7 @@ mod tests {
                 let (sw_k, _) = sw_k.split_at_mut(prime_field.len());
 
                 loop {
-                    ctx.rng.read(k);
+                    rng.read(k);
                     let is_zero = k.iter().all(|&elt| elt == 0);
                     let is_modulus = k.iter().zip(prime_field).all(|(&a, &b)| a == b);
                     if is_zero == false && is_modulus == false {
@@ -465,6 +470,7 @@ mod tests {
 
     #[test]
     fn test_jacobian_point_verification(mut ctx: Context<'static>) {
+        let rng = Rng::new();
         for &prime_field in TEST_PARAMS_VECTOR.prime_fields {
             let t1 = &mut [0_u8; 128];
             let (k, x) = t1.split_at_mut(prime_field.len());
@@ -473,8 +479,8 @@ mod tests {
             let (z, _) = z.split_at_mut(prime_field.len());
             for _ in 0..TEST_PARAMS_VECTOR.nb_loop_mul {
                 loop {
-                    ctx.rng.read(k);
-                    ctx.rng.read(z);
+                    rng.read(k);
+                    rng.read(z);
                     let is_zero = k.iter().all(|&elt| elt == 0) || z.iter().all(|&elt| elt == 0);
                     let is_modulus = k.iter().zip(prime_field).all(|(&a, &b)| a == b)
                         || z.iter().zip(prime_field).all(|(&a, &b)| a == b);
@@ -552,6 +558,7 @@ mod tests {
 
     #[test]
     fn test_ecc_afine_point_verification_jacobian_multiplication(mut ctx: Context<'static>) {
+        let rng = Rng::new();
         for &prime_field in TEST_PARAMS_VECTOR.prime_fields {
             let t1 = &mut [0_u8; 96];
             let (k, x) = t1.split_at_mut(prime_field.len());
@@ -565,7 +572,7 @@ mod tests {
                 let (sw_k, _) = sw_k.split_at_mut(prime_field.len());
 
                 loop {
-                    ctx.rng.read(k);
+                    rng.read(k);
                     let is_zero = k.iter().all(|&elt| elt == 0);
                     let is_modulus = k.iter().zip(prime_field).all(|(&a, &b)| a == b);
                     if is_zero == false && is_modulus == false {
@@ -686,14 +693,15 @@ mod tests {
     #[test]
     #[cfg(feature = "esp32c2")]
     fn test_ecc_finite_field_division(mut ctx: Context<'static>) {
+        let rng = Rng::new();
         for &prime_field in TEST_PARAMS_VECTOR.prime_fields {
             let t1 = &mut [0_u8; 64];
             let (k, y) = t1.split_at_mut(prime_field.len());
             let (y, _) = y.split_at_mut(prime_field.len());
             for _ in 0..TEST_PARAMS_VECTOR.nb_loop_inv {
                 loop {
-                    ctx.rng.read(k);
-                    ctx.rng.read(y);
+                    rng.read(k);
+                    rng.read(y);
                     let is_zero = k.iter().all(|&elt| elt == 0) || y.iter().all(|&elt| elt == 0);
                     let is_modulus = k.iter().zip(prime_field).all(|(&a, &b)| a == b)
                         || y.iter().zip(prime_field).all(|(&a, &b)| a == b);

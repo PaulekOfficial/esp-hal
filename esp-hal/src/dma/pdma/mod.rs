@@ -14,21 +14,42 @@
 use critical_section::CriticalSection;
 use portable_atomic::AtomicBool;
 
-use crate::{asynch::AtomicWaker, dma::*, handler, interrupt::Priority, peripherals::Interrupt};
+use crate::{
+    DriverMode,
+    asynch::AtomicWaker,
+    dma::{
+        Channel,
+        DmaChannel,
+        DmaChannelConvert,
+        DmaChannelExt,
+        DmaEligible,
+        DmaPeripheral,
+        DmaRxInterrupt,
+        DmaTxInterrupt,
+        InterruptAccess,
+        InterruptHandler,
+        RegisterAccess,
+    },
+    handler,
+    interrupt::Priority,
+    peripherals::Interrupt,
+};
 
-#[cfg(esp32s2)]
+#[cfg(soc_has_copy_dma)]
 mod copy;
-#[cfg(esp32s2)]
+#[cfg(soc_has_crypto_dma)]
 mod crypto;
 mod i2s;
 mod spi;
 
-#[cfg(esp32s2)]
-pub use copy::*;
-#[cfg(esp32s2)]
-pub use crypto::*;
-pub use i2s::*;
-pub use spi::*;
+#[cfg(soc_has_copy_dma)]
+pub use copy::{CopyDmaRxChannel, CopyDmaTxChannel};
+#[cfg(soc_has_crypto_dma)]
+pub use crypto::{CryptoDmaRxChannel, CryptoDmaTxChannel};
+use i2s::I2sRegisterBlock;
+pub use i2s::{AnyI2sDmaChannel, AnyI2sDmaRxChannel, AnyI2sDmaTxChannel};
+use spi::SpiRegisterBlock;
+pub use spi::{AnySpiDmaChannel, AnySpiDmaRxChannel, AnySpiDmaTxChannel};
 
 #[doc(hidden)]
 pub trait PdmaChannel: crate::private::Sealed {
@@ -136,17 +157,21 @@ macro_rules! impl_pdma_channel {
 impl_pdma_channel!(AnySpi, SpiRegisterBlock, DMA_SPI2, SPI2_DMA, [Spi2]);
 impl_pdma_channel!(AnySpi, SpiRegisterBlock, DMA_SPI3, SPI3_DMA, [Spi3]);
 
+#[cfg(soc_has_i2s0)]
 impl_pdma_channel!(AnyI2s, I2sRegisterBlock, DMA_I2S0, I2S0, [I2s0]);
-#[cfg(i2s1)]
+#[cfg(soc_has_i2s1)]
 impl_pdma_channel!(AnyI2s, I2sRegisterBlock, DMA_I2S1, I2S1, [I2s1]);
 
 // Specific peripherals use specific channels. Note that this may be overly
 // restrictive (ESP32 allows configuring 2 SPI DMA channels between 3 different
 // peripherals), but for the current set of restrictions this is sufficient.
+#[cfg(soc_has_spi2)]
 crate::dma::impl_dma_eligible!([DMA_SPI2] SPI2 => Spi2);
+#[cfg(soc_has_spi3)]
 crate::dma::impl_dma_eligible!([DMA_SPI3] SPI3 => Spi3);
+#[cfg(soc_has_i2s0)]
 crate::dma::impl_dma_eligible!([DMA_I2S0] I2S0 => I2s0);
-#[cfg(i2s1)]
+#[cfg(soc_has_i2s1)]
 crate::dma::impl_dma_eligible!([DMA_I2S1] I2S1 => I2s1);
 #[cfg(esp32s2)]
 use crate::peripherals::DMA_CRYPTO;

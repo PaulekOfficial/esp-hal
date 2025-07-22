@@ -12,13 +12,14 @@ use esp_hal::{
     dma_buffers,
     gpio::{Level, Output, OutputConfig},
     spi::{
-        DataMode,
         Mode,
-        master::{Address, Command, Config, Spi, SpiDma},
+        master::{Address, Command, Config, DataMode, Spi, SpiDma},
     },
     time::Rate,
 };
 use hil_test as _;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 struct Context {
     spi: SpiDma<'static, Blocking>,

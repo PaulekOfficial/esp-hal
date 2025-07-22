@@ -15,42 +15,26 @@ use esp_hal::xtensa_lx::interrupt::free as interrupt_free;
 use esp_hal::{
     clock::CpuClock,
     interrupt::{Priority, software::SoftwareInterruptControl},
-    peripherals::{Peripherals, RADIO_CLK, RNG, TIMG0},
-    rng::Rng,
+    peripherals::{Peripherals, TIMG0},
     timer::timg::TimerGroup,
 };
 use esp_hal_embassy::InterruptExecutor;
 use esp_wifi::InitializationError;
-use hil_test as _;
+use hil_test::mk_static;
 use static_cell::StaticCell;
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[embassy_executor::task]
 async fn try_init(
     signal: &'static Signal<CriticalSectionRawMutex, Option<InitializationError>>,
     timer: TIMG0<'static>,
-    rng: RNG<'static>,
-    radio_clk: RADIO_CLK<'static>,
 ) {
     let timg0 = TimerGroup::new(timer);
 
-    let init = esp_wifi::init(timg0.timer0, Rng::new(rng), radio_clk);
-
-    match init {
-        Ok(_) => {
-            signal.signal(None);
-        }
-        Err(err) => {
-            signal.signal(Some(err));
-        }
+    match esp_wifi::init(timg0.timer0) {
+        Ok(_) => signal.signal(None),
+        Err(err) => signal.signal(Some(err)),
     }
 }
 
@@ -70,13 +54,7 @@ mod tests {
     #[test]
     fn test_init_fails_cs(peripherals: Peripherals) {
         let timg0 = TimerGroup::new(peripherals.TIMG0);
-        let init = critical_section::with(|_| {
-            esp_wifi::init(
-                timg0.timer0,
-                Rng::new(peripherals.RNG),
-                peripherals.RADIO_CLK,
-            )
-        });
+        let init = critical_section::with(|_| esp_wifi::init(timg0.timer0));
 
         assert!(matches!(
             init,
@@ -87,13 +65,7 @@ mod tests {
     #[test]
     fn test_init_fails_interrupt_free(peripherals: Peripherals) {
         let timg0 = TimerGroup::new(peripherals.TIMG0);
-        let init = interrupt_free(|| {
-            esp_wifi::init(
-                timg0.timer0,
-                Rng::new(peripherals.RNG),
-                peripherals.RADIO_CLK,
-            )
-        });
+        let init = interrupt_free(|| esp_wifi::init(timg0.timer0));
 
         assert!(matches!(
             init,
@@ -114,14 +86,7 @@ mod tests {
         let signal =
             mk_static!(Signal<CriticalSectionRawMutex, Option<InitializationError>>, Signal::new());
 
-        spawner
-            .spawn(try_init(
-                signal,
-                peripherals.TIMG0,
-                peripherals.RNG,
-                peripherals.RADIO_CLK,
-            ))
-            .ok();
+        spawner.spawn(try_init(signal, peripherals.TIMG0)).ok();
 
         let res = signal.wait().await;
 

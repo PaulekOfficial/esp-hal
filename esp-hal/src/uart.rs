@@ -3,7 +3,7 @@
 //! ## Overview
 //!
 //! The UART is a hardware peripheral which handles communication using serial
-//! communication interfaces, such as RS232 and RS485. This peripheral provides
+//! communication interfaces, such as RS232 and RS485. This peripheral provides!
 //! a cheap and ubiquitous method for full- and half-duplex communication
 //! between devices.
 //!
@@ -65,7 +65,6 @@ use crate::{
     },
     interrupt::InterruptHandler,
     pac::uart0::RegisterBlock,
-    peripherals::Interrupt,
     private::OnDrop,
     system::{PeripheralClockControl, PeripheralGuard},
 };
@@ -149,14 +148,14 @@ impl embedded_io::Error for TxError {
 #[instability::unstable]
 pub enum ClockSource {
     /// APB_CLK clock source
-    #[cfg_attr(not(any(esp32c6, esp32h2, lp_uart)), default)]
+    #[cfg_attr(not(any(esp32c6, esp32h2, soc_has_lp_uart)), default)]
     Apb,
     /// RC_FAST_CLK clock source (17.5 MHz)
     #[cfg(not(any(esp32, esp32s2)))]
     RcFast,
     /// XTAL_CLK clock source
     #[cfg(not(any(esp32, esp32s2)))]
-    #[cfg_attr(any(esp32c6, esp32h2, lp_uart), default)]
+    #[cfg_attr(any(esp32c6, esp32h2, soc_has_lp_uart), default)]
     Xtal,
     /// REF_TICK clock source (derived from XTAL or RC_FAST, 1MHz)
     #[cfg(any(esp32, esp32s2))]
@@ -219,6 +218,64 @@ pub enum StopBits {
     _2,
 }
 
+/// Software flow control settings.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[instability::unstable]
+pub enum SwFlowControl {
+    #[default]
+    /// Disables software flow control.
+    Disabled,
+    /// Enables software flow control with configured parameters
+    Enabled {
+        /// Xon flow control byte.
+        xon_char: u8,
+        /// Xoff flow control byte.
+        xoff_char: u8,
+        /// If the software flow control is enabled and the data amount in
+        /// rxfifo is less than xon_thrd, an xon_char will be sent.
+        xon_threshold: u8,
+        /// If the software flow control is enabled and the data amount in
+        /// rxfifo is more than xoff_thrd, an xoff_char will be sent
+        xoff_threshold: u8,
+    },
+}
+
+/// Configuration for CTS (Clear To Send) flow control.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[instability::unstable]
+pub enum CtsConfig {
+    /// Enable CTS flow control (TX).
+    Enabled,
+    #[default]
+    /// Disable CTS flow control (TX).
+    Disabled,
+}
+
+/// Configuration for RTS (Request To Send) flow control.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[instability::unstable]
+pub enum RtsConfig {
+    /// Enable RTS flow control with a FIFO threshold (RX).
+    Enabled(u8),
+    #[default]
+    /// Disable RTS flow control.
+    Disabled,
+}
+
+/// Hardware flow control configuration.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[instability::unstable]
+pub struct HwFlowControl {
+    /// CTS configuration.
+    pub cts: CtsConfig,
+    /// RTS configuration.
+    pub rts: RtsConfig,
+}
+
 /// Defines how strictly the requested baud rate must be met.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -252,6 +309,12 @@ pub struct Config {
     parity: Parity,
     /// Number of stop bits in each frame (1, 1.5, or 2 bits).
     stop_bits: StopBits,
+    /// Software flow control.
+    #[builder_lite(unstable)]
+    sw_flow_ctrl: SwFlowControl,
+    /// Hardware flow control.
+    #[builder_lite(unstable)]
+    hw_flow_ctrl: HwFlowControl,
     /// Clock source used by the UART peripheral.
     #[builder_lite(unstable)]
     clock_source: ClockSource,
@@ -271,6 +334,8 @@ impl Default for Config {
             data_bits: Default::default(),
             parity: Default::default(),
             stop_bits: Default::default(),
+            sw_flow_ctrl: Default::default(),
+            hw_flow_ctrl: Default::default(),
             clock_source: Default::default(),
         }
     }
@@ -284,7 +349,7 @@ impl Config {
 
         // Max supported baud rate is 5Mbaud
         if self.baudrate == 0 || self.baudrate > 5_000_000 {
-            return Err(ConfigError::UnsupportedBaudrate);
+            return Err(ConfigError::BaudrateNotSupported);
         }
         Ok(())
     }
@@ -342,12 +407,12 @@ pub struct AtCmdConfig {
     /// Optional idle time after the AT command detection ends, in clock
     /// cycles.
     post_idle_count: Option<u16>,
-    /// Optional timeout between characters in the AT command, in clock
+    /// Optional timeout between bytes in the AT command, in clock
     /// cycles.
     gap_timeout: Option<u16>,
-    /// The character that triggers the AT command detection.
+    /// The byte (character) that triggers the AT command detection.
     cmd_char: u8,
-    /// Optional number of characters to detect as part of the AT command.
+    /// Optional number of bytes to detect as part of the AT command.
     char_num: u8,
 }
 
@@ -406,20 +471,20 @@ where
     }
 }
 
+#[procmacros::doc_replace]
 /// UART (Full-duplex)
 ///
+/// ## Example
+///
 /// ```rust, no_run
-#[doc = crate::before_snippet!()]
-/// # use esp_hal::uart::{Config, Uart};
-/// let mut uart = Uart::new(
-///     peripherals.UART0,
-///     Config::default())?
-/// .with_rx(peripherals.GPIO1)
-/// .with_tx(peripherals.GPIO2);
+/// # {before_snippet}
+/// use esp_hal::uart::{Config, Uart};
+/// let mut uart = Uart::new(peripherals.UART0, Config::default())?
+///     .with_rx(peripherals.GPIO1)
+///     .with_tx(peripherals.GPIO2);
 ///
 /// uart.write(b"Hello world!")?;
-/// # Ok(())
-/// # }
+/// # {after_snippet}
 /// ```
 pub struct Uart<'d, Dm: DriverMode> {
     rx: UartRx<'d, Dm>,
@@ -450,30 +515,29 @@ pub struct UartRx<'d, Dm: DriverMode> {
 #[non_exhaustive]
 pub enum ConfigError {
     /// The requested baud rate is not achievable.
-    #[cfg(any(doc, feature = "unstable"))]
+    #[cfg(feature = "unstable")]
     #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
-    UnachievableBaudrate,
+    BaudrateNotAchievable,
 
     /// The requested baud rate is not supported.
     ///
     /// This error is returned if:
     ///  * the baud rate exceeds 5MBaud or is equal to zero.
-    ///  * the user has specified an exact baud rate or with some percentage of
-    ///    deviation to the desired value, and the driver cannot reach this
-    ///    speed.
-    UnsupportedBaudrate,
+    ///  * the user has specified an exact baud rate or with some percentage of deviation to the
+    ///    desired value, and the driver cannot reach this speed.
+    BaudrateNotSupported,
 
-    /// The requested  timeout exceeds the maximum value (
+    /// The requested timeout exceeds the maximum value (
     #[cfg_attr(esp32, doc = "127")]
     #[cfg_attr(not(esp32), doc = "1023")]
     /// ).
-    UnsupportedTimeout,
+    TimeoutTooLong,
 
     /// The requested RX FIFO threshold exceeds the maximum value (127 bytes).
-    UnsupportedRxFifoThreshold,
+    RxFifoThresholdNotSupported,
 
     /// The requested TX FIFO threshold exceeds the maximum value (127 bytes).
-    UnsupportedTxFifoThreshold,
+    TxFifoThresholdNotSupported,
 }
 
 impl core::error::Error for ConfigError {}
@@ -482,17 +546,17 @@ impl core::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             #[cfg(feature = "unstable")]
-            ConfigError::UnachievableBaudrate => {
+            ConfigError::BaudrateNotAchievable => {
                 write!(f, "The requested baud rate is not achievable")
             }
-            ConfigError::UnsupportedBaudrate => {
+            ConfigError::BaudrateNotSupported => {
                 write!(f, "The requested baud rate is not supported")
             }
-            ConfigError::UnsupportedTimeout => write!(f, "The requested timeout is not supported"),
-            ConfigError::UnsupportedRxFifoThreshold => {
+            ConfigError::TimeoutTooLong => write!(f, "The requested timeout is not supported"),
+            ConfigError::RxFifoThresholdNotSupported => {
                 write!(f, "The requested RX FIFO threshold is not supported")
             }
-            ConfigError::UnsupportedTxFifoThreshold => {
+            ConfigError::TxFifoThresholdNotSupported => {
                 write!(f, "The requested TX FIFO threshold is not supported")
             }
         }
@@ -539,6 +603,7 @@ where
 }
 
 impl<'d> UartTx<'d, Blocking> {
+    #[procmacros::doc_replace]
     /// Create a new UART TX instance in [`Blocking`] mode.
     ///
     /// ## Errors
@@ -549,14 +614,10 @@ impl<'d> UartTx<'d, Blocking> {
     /// ## Example
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
-    /// # use esp_hal::uart::{Config, UartTx};
-    /// let tx = UartTx::new(
-    ///     peripherals.UART0,
-    ///     Config::default())?
-    /// .with_tx(peripherals.GPIO1);
-    /// # Ok(())
-    /// # }
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, UartTx};
+    /// let tx = UartTx::new(peripherals.UART0, Config::default())?.with_tx(peripherals.GPIO1);
+    /// # {after_snippet}
     /// ```
     #[instability::unstable]
     pub fn new(uart: impl Instance + 'd, config: Config) -> Result<Self, ConfigError> {
@@ -570,7 +631,6 @@ impl<'d> UartTx<'d, Blocking> {
     pub fn into_async(self) -> UartTx<'d, Async> {
         if !self.uart.state().is_rx_async.load(Ordering::Acquire) {
             self.uart
-                .info()
                 .set_interrupt_handler(self.uart.info().async_handler);
         }
         self.uart.state().is_tx_async.store(true, Ordering::Release);
@@ -594,7 +654,7 @@ impl<'d> UartTx<'d, Async> {
             .is_tx_async
             .store(false, Ordering::Release);
         if !self.uart.state().is_rx_async.load(Ordering::Acquire) {
-            self.uart.info().disable_interrupts();
+            self.uart.disable_peri_interrupt();
         }
 
         UartTx {
@@ -750,6 +810,15 @@ where
         self.uart.info().write(data)
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
+    fn write_all(&mut self, mut data: &[u8]) -> Result<(), TxError> {
+        while !data.is_empty() {
+            let bytes_written = self.write(data)?;
+            data = &data[bytes_written..];
+        }
+        Ok(())
+    }
+
     /// Flush the transmit buffer.
     ///
     /// This function blocks until all data in the TX FIFO has been
@@ -833,6 +902,7 @@ fn sync_regs(_register_block: &RegisterBlock) {
 }
 
 impl<'d> UartRx<'d, Blocking> {
+    #[procmacros::doc_replace]
     /// Create a new UART RX instance in [`Blocking`] mode.
     ///
     /// ## Errors
@@ -841,14 +911,10 @@ impl<'d> UartRx<'d, Blocking> {
     /// supported by the hardware.
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
-    /// # use esp_hal::uart::{Config, UartRx};
-    /// let rx = UartRx::new(
-    ///     peripherals.UART1,
-    ///     Config::default())?
-    /// .with_rx(peripherals.GPIO2);
-    /// # Ok(())
-    /// # }
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, UartRx};
+    /// let rx = UartRx::new(peripherals.UART0, Config::default())?.with_rx(peripherals.GPIO2);
+    /// # {after_snippet}
     /// ```
     #[instability::unstable]
     pub fn new(uart: impl Instance + 'd, config: Config) -> Result<Self, ConfigError> {
@@ -862,7 +928,6 @@ impl<'d> UartRx<'d, Blocking> {
     pub fn into_async(self) -> UartRx<'d, Async> {
         if !self.uart.state().is_tx_async.load(Ordering::Acquire) {
             self.uart
-                .info()
                 .set_interrupt_handler(self.uart.info().async_handler);
         }
         self.uart.state().is_rx_async.store(true, Ordering::Release);
@@ -884,7 +949,7 @@ impl<'d> UartRx<'d, Async> {
             .is_rx_async
             .store(false, Ordering::Release);
         if !self.uart.state().is_tx_async.load(Ordering::Acquire) {
-            self.uart.info().disable_interrupts();
+            self.uart.disable_peri_interrupt();
         }
 
         UartRx {
@@ -1145,7 +1210,7 @@ where
     ///
     /// This function clears and disables the `receive FIFO full` interrupt,
     /// `receive FIFO overflow`, `receive FIFO timeout`, and `AT command
-    /// character detection` interrupts.
+    /// byte detection` interrupts.
     fn disable_rx_interrupts(&self) {
         self.regs().int_clr().write(|w| {
             w.rxfifo_full().clear_bit_by_one();
@@ -1164,6 +1229,7 @@ where
 }
 
 impl<'d> Uart<'d, Blocking> {
+    #[procmacros::doc_replace]
     /// Create a new UART instance in [`Blocking`] mode.
     ///
     /// ## Errors
@@ -1174,21 +1240,21 @@ impl<'d> Uart<'d, Blocking> {
     /// ## Example
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
-    /// # use esp_hal::uart::{Config, Uart};
-    /// let mut uart1 = Uart::new(
-    ///     peripherals.UART1,
-    ///     Config::default())?
-    /// .with_rx(peripherals.GPIO1)
-    /// .with_tx(peripherals.GPIO2);
-    /// # Ok(())
-    /// # }
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let mut uart = Uart::new(peripherals.UART0, Config::default())?
+    ///     .with_rx(peripherals.GPIO1)
+    ///     .with_tx(peripherals.GPIO2);
+    /// # {after_snippet}
     /// ```
     pub fn new(uart: impl Instance + 'd, config: Config) -> Result<Self, ConfigError> {
         UartBuilder::new(uart).init(config)
     }
 
     /// Reconfigures the driver to operate in [`Async`] mode.
+    ///
+    /// See the [`Async`] documentation for an example on how to use this
+    /// method.
     pub fn into_async(self) -> Uart<'d, Async> {
         Uart {
             rx: self.rx.into_async(),
@@ -1213,9 +1279,10 @@ impl<'d> Uart<'d, Blocking> {
     #[instability::unstable]
     pub fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
         // `self.tx.uart` and `self.rx.uart` are the same
-        self.tx.uart.info().set_interrupt_handler(handler);
+        self.tx.uart.set_interrupt_handler(handler);
     }
 
+    #[procmacros::doc_replace]
     /// Listen for the given interrupts
     ///
     /// ## Example
@@ -1224,23 +1291,25 @@ impl<'d> Uart<'d, Blocking> {
     /// to connect to the board (espflash won't work)
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
-    /// # use esp_hal::delay::Delay;
-    /// # use esp_hal::uart::{AtCmdConfig, Config, RxConfig, Uart, UartInterrupt};
+    /// # {before_snippet}
+    /// use esp_hal::{
+    ///     delay::Delay,
+    ///     uart::{AtCmdConfig, Config, RxConfig, Uart, UartInterrupt},
+    /// };
     /// # let delay = Delay::new();
     /// # let config = Config::default().with_rx(
     /// #    RxConfig::default().with_fifo_full_threshold(30)
     /// # );
-    /// # let mut uart0 = Uart::new(
+    /// # let mut uart = Uart::new(
     /// #    peripherals.UART0,
     /// #    config)?;
-    /// uart0.set_interrupt_handler(interrupt_handler);
+    /// uart.set_interrupt_handler(interrupt_handler);
     ///
     /// critical_section::with(|cs| {
-    ///     uart0.set_at_cmd(AtCmdConfig::default().with_cmd_char(b'#'));
-    ///     uart0.listen(UartInterrupt::AtCmd | UartInterrupt::RxFifoFull);
+    ///     uart.set_at_cmd(AtCmdConfig::default().with_cmd_char(b'#'));
+    ///     uart.listen(UartInterrupt::AtCmd | UartInterrupt::RxFifoFull);
     ///
-    ///     SERIAL.borrow_ref_mut(cs).replace(uart0);
+    ///     SERIAL.borrow_ref_mut(cs).replace(uart);
     /// });
     ///
     /// loop {
@@ -1249,14 +1318,15 @@ impl<'d> Uart<'d, Blocking> {
     /// }
     /// # }
     ///
-    /// # use core::cell::RefCell;
-    /// # use critical_section::Mutex;
-    /// # use esp_hal::uart::Uart;
-    /// static SERIAL: Mutex<RefCell<Option<Uart<esp_hal::Blocking>>>> =
-    ///     Mutex::new(RefCell::new(None));
+    /// use core::cell::RefCell;
     ///
-    /// # use esp_hal::uart::UartInterrupt;
-    /// # use core::fmt::Write;
+    /// use critical_section::Mutex;
+    /// use esp_hal::uart::Uart;
+    /// static SERIAL: Mutex<RefCell<Option<Uart<esp_hal::Blocking>>>> = Mutex::new(RefCell::new(None));
+    ///
+    /// use core::fmt::Write;
+    ///
+    /// use esp_hal::uart::UartInterrupt;
     /// #[handler]
     /// fn interrupt_handler() {
     ///     critical_section::with(|cs| {
@@ -1274,9 +1344,7 @@ impl<'d> Uart<'d, Blocking> {
     ///                 pending_interrupts.contains(UartInterrupt::RxFifoFull),
     ///             );
     ///
-    ///             serial.clear_interrupts(
-    ///                 UartInterrupt::AtCmd | UartInterrupt::RxFifoFull
-    ///             );
+    ///             serial.clear_interrupts(UartInterrupt::AtCmd | UartInterrupt::RxFifoFull);
     ///         }
     ///     });
     /// }
@@ -1307,6 +1375,9 @@ impl<'d> Uart<'d, Blocking> {
 
 impl<'d> Uart<'d, Async> {
     /// Reconfigures the driver to operate in [`Blocking`] mode.
+    ///
+    /// See the [`Blocking`] documentation for an example on how to use this
+    /// method.
     pub fn into_blocking(self) -> Uart<'d, Blocking> {
         Uart {
             rx: self.rx.into_blocking(),
@@ -1314,6 +1385,7 @@ impl<'d> Uart<'d, Async> {
         }
     }
 
+    #[procmacros::doc_replace]
     /// Write data into the TX buffer.
     ///
     /// This function writes the provided buffer `bytes` into the UART transmit
@@ -1329,11 +1401,27 @@ impl<'d> Uart<'d, Async> {
     /// ## Cancellation
     ///
     /// This function is cancellation safe.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let mut uart = Uart::new(peripherals.UART0, Config::default())?
+    ///     .with_rx(peripherals.GPIO1)
+    ///     .with_tx(peripherals.GPIO2)
+    ///     .into_async();
+    ///
+    /// const MESSAGE: &[u8] = b"Hello, world!";
+    /// uart.write_async(&MESSAGE).await?;
+    /// # {after_snippet}
+    /// ```
     #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn write_async(&mut self, words: &[u8]) -> Result<usize, TxError> {
         self.tx.write_async(words).await
     }
 
+    #[procmacros::doc_replace]
     /// Asynchronously flushes the UART transmit buffer.
     ///
     /// This function ensures that all pending data in the transmit FIFO has
@@ -1343,11 +1431,28 @@ impl<'d> Uart<'d, Async> {
     /// ## Cancellation
     ///
     /// This function is cancellation safe.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let mut uart = Uart::new(peripherals.UART0, Config::default())?
+    ///     .with_rx(peripherals.GPIO1)
+    ///     .with_tx(peripherals.GPIO2)
+    ///     .into_async();
+    ///
+    /// const MESSAGE: &[u8] = b"Hello, world!";
+    /// uart.write_async(&MESSAGE).await?;
+    /// uart.flush_async().await?;
+    /// # {after_snippet}
+    /// ```
     #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn flush_async(&mut self) -> Result<(), TxError> {
         self.tx.flush_async().await
     }
 
+    #[procmacros::doc_replace]
     /// Read data asynchronously.
     ///
     /// This function reads data from the UART receive buffer into the
@@ -1366,6 +1471,25 @@ impl<'d> Uart<'d, Async> {
     /// ## Cancellation
     ///
     /// This function is cancellation safe.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let mut uart = Uart::new(peripherals.UART0, Config::default())?
+    ///     .with_rx(peripherals.GPIO1)
+    ///     .with_tx(peripherals.GPIO2)
+    ///     .into_async();
+    ///
+    /// const MESSAGE: &[u8] = b"Hello, world!";
+    /// uart.write_async(&MESSAGE).await?;
+    /// uart.flush_async().await?;
+    ///
+    /// let mut buf = [0u8; MESSAGE.len()];
+    /// uart.read_async(&mut buf[..]).await.unwrap();
+    /// # {after_snippet}
+    /// ```
     #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub async fn read_async(&mut self, buf: &mut [u8]) -> Result<usize, RxError> {
         self.rx.read_async(buf).await
@@ -1399,7 +1523,7 @@ impl<'d> Uart<'d, Async> {
 #[instability::unstable]
 pub enum UartInterrupt {
     /// Indicates that the received has detected the configured
-    /// [`Uart::set_at_cmd`] character.
+    /// [`Uart::set_at_cmd`] byte.
     AtCmd,
 
     /// The transmitter has finished sending out all data from the FIFO.
@@ -1408,12 +1532,17 @@ pub enum UartInterrupt {
     /// The receiver has received more data than what
     /// [`RxConfig::fifo_full_threshold`] specifies.
     RxFifoFull,
+
+    /// The receiver has not received any data for the time
+    /// [`RxConfig::with_timeout`] specifies.
+    RxTimeout,
 }
 
 impl<'d, Dm> Uart<'d, Dm>
 where
     Dm: DriverMode,
 {
+    #[procmacros::doc_replace]
     /// Assign the RX pin for UART instance.
     ///
     /// Sets the specified pin to input and connects it to the UART RX signal.
@@ -1422,27 +1551,74 @@ where
     /// configure the driver side (i.e. the TX pin), or ensure that the line is
     /// initially high, to avoid receiving a non-data byte caused by an
     /// initial low signal level.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let uart = Uart::new(peripherals.UART0, Config::default())?.with_rx(peripherals.GPIO1);
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn with_rx(mut self, rx: impl PeripheralInput<'d>) -> Self {
         self.rx = self.rx.with_rx(rx);
         self
     }
 
+    #[procmacros::doc_replace]
     /// Assign the TX pin for UART instance.
     ///
     /// Sets the specified pin to push-pull output and connects it to the UART
     /// TX signal.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let uart = Uart::new(peripherals.UART0, Config::default())?.with_tx(peripherals.GPIO2);
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn with_tx(mut self, tx: impl PeripheralOutput<'d>) -> Self {
         self.tx = self.tx.with_tx(tx);
         self
     }
 
+    #[procmacros::doc_replace]
     /// Configure CTS pin
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let uart = Uart::new(peripherals.UART0, Config::default())?
+    ///     .with_rx(peripherals.GPIO1)
+    ///     .with_cts(peripherals.GPIO3);
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn with_cts(mut self, cts: impl PeripheralInput<'d>) -> Self {
         self.rx = self.rx.with_cts(cts);
         self
     }
 
+    #[procmacros::doc_replace]
     /// Configure RTS pin
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let uart = Uart::new(peripherals.UART0, Config::default())?
+    ///     .with_tx(peripherals.GPIO2)
+    ///     .with_rts(peripherals.GPIO3);
+    ///
+    /// # {after_snippet}
+    /// ```
     pub fn with_rts(mut self, rts: impl PeripheralOutput<'d>) -> Self {
         self.tx = self.tx.with_rts(rts);
         self
@@ -1461,6 +1637,7 @@ where
         self.tx.write_ready()
     }
 
+    #[procmacros::doc_replace]
     /// Writes bytes.
     ///
     /// This function writes data to the internal TX FIFO of the UART
@@ -1478,22 +1655,34 @@ where
     /// ## Example
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
-    /// # use esp_hal::uart::{Config, Uart};
-    /// # let mut uart1 = Uart::new(
-    /// #     peripherals.UART1,
-    /// #     Config::default())?;
-    /// // Write bytes out over the UART:
-    /// uart1.write(b"Hello, world!")?;
-    /// # Ok(())
-    /// # }
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let mut uart = Uart::new(peripherals.UART0, Config::default())?;
+    ///
+    /// const MESSAGE: &[u8] = b"Hello, world!";
+    /// uart.write(&MESSAGE)?;
+    /// # {after_snippet}
     /// ```
     #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn write(&mut self, data: &[u8]) -> Result<usize, TxError> {
         self.tx.write(data)
     }
 
+    #[procmacros::doc_replace]
     /// Flush the transmit buffer of the UART
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let mut uart = Uart::new(peripherals.UART0, Config::default())?;
+    ///
+    /// const MESSAGE: &[u8] = b"Hello, world!";
+    /// uart.write(&MESSAGE)?;
+    /// uart.flush()?;
+    /// # {after_snippet}
+    /// ```
     #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn flush(&mut self) -> Result<(), TxError> {
         self.tx.flush()
@@ -1508,6 +1697,7 @@ where
         self.rx.read_ready()
     }
 
+    #[procmacros::doc_replace]
     /// Read received bytes.
     ///
     /// The UART hardware continuously receives bytes and stores them in the RX
@@ -1525,17 +1715,46 @@ where
     ///
     /// If the error occurred before this function was called, the contents of
     /// the FIFO are not modified.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let mut uart = Uart::new(peripherals.UART0, Config::default())?;
+    ///
+    /// const MESSAGE: &[u8] = b"Hello, world!";
+    /// uart.write(&MESSAGE)?;
+    /// uart.flush()?;
+    ///
+    /// let mut buf = [0u8; MESSAGE.len()];
+    /// uart.read(&mut buf[..])?;
+    ///
+    /// # {after_snippet}
+    /// ```
     #[cfg_attr(place_uart_driver_in_ram, ram)]
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, RxError> {
         self.rx.read(buf)
     }
 
+    #[procmacros::doc_replace]
     /// Change the configuration.
     ///
     /// ## Errors
     ///
     /// This function returns a [`ConfigError`] if the configuration is not
     /// supported by the hardware.
+    ///
+    /// ## Example
+    ///
+    /// ```rust, no_run
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let mut uart = Uart::new(peripherals.UART0, Config::default())?;
+    ///
+    /// uart.apply_config(&Config::default().with_baudrate(19_200))?;
+    /// # {after_snippet}
+    /// ```
     pub fn apply_config(&mut self, config: &Config) -> Result<(), ConfigError> {
         // Must apply the common settings first, as `rx.apply_config` reads back symbol
         // size.
@@ -1545,6 +1764,7 @@ where
         Ok(())
     }
 
+    #[procmacros::doc_replace]
     /// Split the UART into a transmitter and receiver
     ///
     /// This is particularly useful when having two tasks correlating to
@@ -1553,22 +1773,20 @@ where
     /// ## Example
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
-    /// # use esp_hal::uart::{Config, Uart};
-    /// # let mut uart1 = Uart::new(
-    /// #     peripherals.UART1,
-    /// #     Config::default())?
-    /// # .with_rx(peripherals.GPIO1)
-    /// # .with_tx(peripherals.GPIO2);
+    /// # {before_snippet}
+    /// use esp_hal::uart::{Config, Uart};
+    /// let mut uart = Uart::new(peripherals.UART0, Config::default())?
+    ///     .with_rx(peripherals.GPIO1)
+    ///     .with_tx(peripherals.GPIO2);
+    ///
     /// // The UART can be split into separate Transmit and Receive components:
-    /// let (mut rx, mut tx) = uart1.split();
+    /// let (mut rx, mut tx) = uart.split();
     ///
     /// // Each component can be used individually to interact with the UART:
     /// tx.write(&[42u8])?;
     /// let mut byte = [0u8; 1];
     /// rx.read(&mut byte);
-    /// # Ok(())
-    /// # }
+    /// # {after_snippet}
     /// ```
     #[instability::unstable]
     pub fn split(self) -> (UartRx<'d, Dm>, UartTx<'d, Dm>) {
@@ -1725,7 +1943,7 @@ impl crate::private::Sealed for Uart<'_, Blocking> {}
 impl crate::interrupt::InterruptConfigurable for Uart<'_, Blocking> {
     fn set_interrupt_handler(&mut self, handler: InterruptHandler) {
         // `self.tx.uart` and `self.rx.uart` are the same
-        self.tx.uart.info().set_interrupt_handler(handler);
+        self.tx.uart.set_interrupt_handler(handler);
     }
 }
 
@@ -1756,8 +1974,7 @@ where
 
     #[inline]
     fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
-        self.write(s.as_bytes())?;
-        Ok(())
+        self.write_all(s.as_bytes())
     }
 }
 
@@ -1777,8 +1994,7 @@ where
 {
     #[inline]
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.write(s.as_bytes()).map_err(|_| core::fmt::Error)?;
-        Ok(())
+        self.write_all(s.as_bytes()).map_err(|_| core::fmt::Error)
     }
 }
 
@@ -2367,7 +2583,7 @@ pub mod lp_uart {
 }
 
 /// A peripheral singleton compatible with the UART driver.
-pub trait Instance: crate::private::Sealed + IntoAnyUart {
+pub trait Instance: crate::private::Sealed + any::Degrade {
     #[doc(hidden)]
     /// Returns the peripheral data and state describing this UART instance.
     fn parts(&self) -> (&'static Info, &'static State);
@@ -2402,9 +2618,6 @@ pub struct Info {
     /// Interrupt handler for the asynchronous operations of this UART instance.
     pub async_handler: InterruptHandler,
 
-    /// Interrupt for this UART instance.
-    pub interrupt: Interrupt,
-
     /// TX pin
     pub tx_signal: OutputSignal,
 
@@ -2438,8 +2651,8 @@ pub struct State {
 impl Info {
     // Currently we don't support merging adjacent FIFO memory, so the max size is
     // 128 bytes, the max threshold is 127 bytes.
-    const UART_FIFO_SIZE: u16 = 128;
-    const RX_FIFO_MAX_THRHD: u16 = 127;
+    const UART_FIFO_SIZE: u16 = property!("uart.ram_size");
+    const RX_FIFO_MAX_THRHD: u16 = Self::UART_FIFO_SIZE - 1;
     const TX_FIFO_MAX_THRHD: u16 = Self::RX_FIFO_MAX_THRHD;
 
     /// Returns the register block for this UART instance.
@@ -2457,6 +2670,7 @@ impl Info {
                     UartInterrupt::AtCmd => w.at_cmd_char_det().bit(enable),
                     UartInterrupt::TxDone => w.tx_done().bit(enable),
                     UartInterrupt::RxFifoFull => w.rxfifo_full().bit(enable),
+                    UartInterrupt::RxTimeout => w.rxfifo_tout().bit(enable),
                 };
             }
             w
@@ -2478,6 +2692,9 @@ impl Info {
         if ints.rxfifo_full().bit_is_set() {
             res.insert(UartInterrupt::RxFifoFull);
         }
+        if ints.rxfifo_tout().bit_is_set() {
+            res.insert(UartInterrupt::RxTimeout);
+        }
 
         res
     }
@@ -2491,24 +2708,11 @@ impl Info {
                     UartInterrupt::AtCmd => w.at_cmd_char_det().clear_bit_by_one(),
                     UartInterrupt::TxDone => w.tx_done().clear_bit_by_one(),
                     UartInterrupt::RxFifoFull => w.rxfifo_full().clear_bit_by_one(),
+                    UartInterrupt::RxTimeout => w.rxfifo_tout().clear_bit_by_one(),
                 };
             }
             w
         });
-    }
-
-    fn set_interrupt_handler(&self, handler: InterruptHandler) {
-        for core in crate::system::Cpu::other() {
-            crate::interrupt::disable(core, self.interrupt);
-        }
-        self.enable_listen(EnumSet::all(), false);
-        self.clear_interrupts(EnumSet::all());
-        unsafe { crate::interrupt::bind_interrupt(self.interrupt, handler.handler()) };
-        unwrap!(crate::interrupt::enable(self.interrupt, handler.priority()));
-    }
-
-    fn disable_interrupts(&self) {
-        crate::interrupt::disable(crate::system::Cpu::current(), self.interrupt);
     }
 
     fn apply_config(&self, config: &Config) -> Result<(), ConfigError> {
@@ -2517,6 +2721,7 @@ impl Info {
         self.change_data_bits(config.data_bits);
         self.change_parity(config.parity);
         self.change_stop_bits(config.stop_bits);
+        self.change_flow_control(config.sw_flow_ctrl, config.hw_flow_ctrl);
 
         Ok(())
     }
@@ -2634,7 +2839,7 @@ impl Info {
     /// [`Info::RX_FIFO_MAX_THRHD`].
     fn set_rx_fifo_full_threshold(&self, threshold: u16) -> Result<(), ConfigError> {
         if threshold > Self::RX_FIFO_MAX_THRHD {
-            return Err(ConfigError::UnsupportedRxFifoThreshold);
+            return Err(ConfigError::RxFifoThresholdNotSupported);
         }
 
         self.regs()
@@ -2658,7 +2863,7 @@ impl Info {
     /// [`Info::TX_FIFO_MAX_THRHD`].
     fn set_tx_fifo_empty_threshold(&self, threshold: u16) -> Result<(), ConfigError> {
         if threshold > Self::TX_FIFO_MAX_THRHD {
-            return Err(ConfigError::UnsupportedTxFifoThreshold);
+            return Err(ConfigError::TxFifoThresholdNotSupported);
         }
 
         self.regs()
@@ -2680,8 +2885,8 @@ impl Info {
     /// [ConfigError::UnsupportedTimeout] if the provided value exceeds
     /// the maximum value for SOC:
     /// - `esp32`: Symbol size is fixed to 8, do not pass a value > **0x7F**.
-    /// - `esp32c2`, `esp32c3`, `esp32c6`, `esp32h2`, esp32s2`, esp32s3`: The
-    ///   value you pass times the symbol size must be <= **0x3FF**
+    /// - `esp32c2`, `esp32c3`, `esp32c6`, `esp32h2`, esp32s2`, esp32s3`: The value you pass times
+    ///   the symbol size must be <= **0x3FF**
     fn set_rx_timeout(&self, timeout: Option<u8>, _symbol_len: u8) -> Result<(), ConfigError> {
         cfg_if::cfg_if! {
             if #[cfg(esp32)] {
@@ -2702,7 +2907,7 @@ impl Info {
             let timeout_reg = timeout as u16 * _symbol_len as u16;
 
             if timeout_reg > MAX_THRHD {
-                return Err(ConfigError::UnsupportedTimeout);
+                return Err(ConfigError::TimeoutTooLong);
             }
 
             cfg_if::cfg_if! {
@@ -2855,6 +3060,87 @@ impl Info {
             .modify(|_, w| unsafe { w.stop_bit_num().bits(stop_bits as u8 + 1) });
     }
 
+    fn change_flow_control(&self, sw_flow_ctrl: SwFlowControl, hw_flow_ctrl: HwFlowControl) {
+        // set SW flow control
+        match sw_flow_ctrl {
+            SwFlowControl::Enabled {
+                xon_char,
+                xoff_char,
+                xon_threshold,
+                xoff_threshold,
+            } => {
+                cfg_if::cfg_if! {
+                    if #[cfg(any(esp32c6, esp32h2))] {
+                        self.regs().swfc_conf0().modify(|_, w| w.xonoff_del().set_bit().sw_flow_con_en().set_bit());
+                        self.regs().swfc_conf1().modify(|_, w| unsafe { w.xon_threshold().bits(xon_threshold).xoff_threshold().bits(xoff_threshold)});
+                        self.regs().swfc_conf0().modify(|_, w| unsafe { w.xon_char().bits(xon_char).xoff_char().bits(xoff_char) });
+                    } else if #[cfg(esp32)]{
+                        self.regs().flow_conf().modify(|_, w| w.xonoff_del().set_bit().sw_flow_con_en().set_bit());
+                        self.regs().swfc_conf().modify(|_, w| unsafe { w.xon_threshold().bits(xon_threshold).xoff_threshold().bits(xoff_threshold) });
+                        self.regs().swfc_conf().modify(|_, w| unsafe { w.xon_char().bits(xon_char).xoff_char().bits(xoff_char) });
+                    } else {
+                        self.regs().flow_conf().modify(|_, w| w.xonoff_del().set_bit().sw_flow_con_en().set_bit());
+                        self.regs().swfc_conf1().modify(|_, w| unsafe { w.xon_threshold().bits(xon_threshold as u16) });
+                        self.regs().swfc_conf0().modify(|_, w| unsafe { w.xoff_threshold().bits(xoff_threshold as u16) });
+                        self.regs().swfc_conf1().modify(|_, w| unsafe { w.xon_char().bits(xon_char) });
+                        self.regs().swfc_conf0().modify(|_, w| unsafe { w.xoff_char().bits(xoff_char) });
+                    }
+                }
+            }
+            SwFlowControl::Disabled => {
+                cfg_if::cfg_if! {
+                    if #[cfg(any(esp32c6, esp32h2))] {
+                        let reg = self.regs().swfc_conf0();
+                    } else {
+                        let reg = self.regs().flow_conf();
+                    }
+                }
+
+                reg.modify(|_, w| w.sw_flow_con_en().clear_bit());
+                reg.modify(|_, w| w.xonoff_del().clear_bit());
+            }
+        }
+
+        self.regs().conf0().modify(|_, w| {
+            w.tx_flow_en()
+                .bit(matches!(hw_flow_ctrl.cts, CtsConfig::Enabled))
+        });
+
+        match hw_flow_ctrl.rts {
+            RtsConfig::Enabled(threshold) => self.configure_rts_flow_ctrl(true, Some(threshold)),
+            RtsConfig::Disabled => self.configure_rts_flow_ctrl(false, None),
+        }
+
+        #[cfg(any(esp32c6, esp32h2))]
+        sync_regs(self.regs());
+    }
+
+    fn configure_rts_flow_ctrl(&self, enable: bool, threshold: Option<u8>) {
+        if let Some(threshold) = threshold {
+            cfg_if::cfg_if! {
+                if #[cfg(esp32)] {
+                    self.regs().conf1().modify(|_, w| unsafe { w.rx_flow_thrhd().bits(threshold) });
+                } else if #[cfg(any(esp32c6, esp32h2))] {
+                    self.regs().hwfc_conf().modify(|_, w| unsafe { w.rx_flow_thrhd().bits(threshold) });
+                } else {
+                    self.regs().mem_conf().modify(|_, w| unsafe { w.rx_flow_thrhd().bits(threshold as u16) });
+                }
+            }
+        }
+
+        cfg_if::cfg_if! {
+            if #[cfg(any(esp32c6, esp32h2))] {
+                self.regs().hwfc_conf().modify(|_, w| {
+                    w.rx_flow_en().bit(enable)
+                });
+            } else {
+                self.regs().conf1().modify(|_, w| {
+                    w.rx_flow_en().bit(enable)
+                });
+            }
+        }
+    }
+
     fn rxfifo_reset(&self) {
         fn rxfifo_rst(reg_block: &RegisterBlock, enable: bool) {
             reg_block.conf0().modify(|_, w| w.rxfifo_rst().bit(enable));
@@ -2909,7 +3195,7 @@ impl Info {
                 // We tolerate deviation of 1% from the desired baud value, as it never will be
                 // exactly the same
                 if deviation > 1_u32 {
-                    return Err(ConfigError::UnachievableBaudrate);
+                    return Err(ConfigError::BaudrateNotAchievable);
                 }
             }
             BaudrateTolerance::ErrorPercent(percent) => {
@@ -2917,7 +3203,7 @@ impl Info {
                     * 100)
                     / actual_baud;
                 if deviation > percent as u32 {
-                    return Err(ConfigError::UnachievableBaudrate);
+                    return Err(ConfigError::BaudrateNotAchievable);
                 }
             }
             _ => {}
@@ -3084,8 +3370,8 @@ impl PartialEq for Info {
 
 unsafe impl Sync for Info {}
 
-macro_rules! impl_instance {
-    ($inst:ident, $peri:ident, $txd:ident, $rxd:ident, $cts:ident, $rts:ident) => {
+for_each_uart! {
+    ($inst:ident, $peri:ident, $rxd:ident, $txd:ident, $cts:ident, $rts:ident) => {
         impl Instance for crate::peripherals::$inst<'_> {
             fn parts(&self) -> (&'static Info, &'static State) {
                 #[crate::handler]
@@ -3104,7 +3390,6 @@ macro_rules! impl_instance {
                     register_block: crate::peripherals::$inst::ptr(),
                     peripheral: crate::system::Peripheral::$peri,
                     async_handler: irq_handler,
-                    interrupt: Interrupt::$inst,
                     tx_signal: OutputSignal::$txd,
                     rx_signal: InputSignal::$rxd,
                     cts_signal: InputSignal::$cts,
@@ -3116,19 +3401,14 @@ macro_rules! impl_instance {
     };
 }
 
-impl_instance!(UART0, Uart0, U0TXD, U0RXD, U0CTS, U0RTS);
-impl_instance!(UART1, Uart1, U1TXD, U1RXD, U1CTS, U1RTS);
-#[cfg(uart2)]
-impl_instance!(UART2, Uart2, U2TXD, U2RXD, U2CTS, U2RTS);
-
 crate::any_peripheral! {
     /// Any UART peripheral.
     pub peripheral AnyUart<'d> {
-        #[cfg(uart0)]
+        #[cfg(soc_has_uart0)]
         Uart0(crate::peripherals::UART0<'d>),
-        #[cfg(uart1)]
+        #[cfg(soc_has_uart1)]
         Uart1(crate::peripherals::UART1<'d>),
-        #[cfg(uart2)]
+        #[cfg(soc_has_uart2)]
         Uart2(crate::peripherals::UART2<'d>),
     }
 }
@@ -3136,13 +3416,30 @@ crate::any_peripheral! {
 impl Instance for AnyUart<'_> {
     #[inline]
     fn parts(&self) -> (&'static Info, &'static State) {
-        match &self.0 {
-            #[cfg(uart0)]
-            AnyUartInner::Uart0(uart) => uart.parts(),
-            #[cfg(uart1)]
-            AnyUartInner::Uart1(uart) => uart.parts(),
-            #[cfg(uart2)]
-            AnyUartInner::Uart2(uart) => uart.parts(),
-        }
+        any::delegate!(self, uart => { uart.parts() })
+    }
+}
+
+impl AnyUart<'_> {
+    fn bind_peri_interrupt(&self, handler: unsafe extern "C" fn() -> ()) {
+        any::delegate!(self, uart => { uart.bind_peri_interrupt(handler) })
+    }
+
+    fn disable_peri_interrupt(&self) {
+        any::delegate!(self, uart => { uart.disable_peri_interrupt() })
+    }
+
+    fn enable_peri_interrupt(&self, priority: crate::interrupt::Priority) {
+        any::delegate!(self, uart => { uart.enable_peri_interrupt(priority) })
+    }
+
+    fn set_interrupt_handler(&self, handler: InterruptHandler) {
+        self.disable_peri_interrupt();
+
+        self.info().enable_listen(EnumSet::all(), false);
+        self.info().clear_interrupts(EnumSet::all());
+
+        self.bind_peri_interrupt(handler.handler());
+        self.enable_peri_interrupt(handler.priority());
     }
 }

@@ -5,8 +5,8 @@
 //! - performs an HTTP get request to some "random" server
 //! - does BLE advertising (you cannot connect to it - it's just not implemented in the example)
 //!
-//! Note: On ESP32-C2 and ESP32-C3 you need a wifi-heap size of 70000, on ESP32-C6 you need 80000 and a tx_queue_size of 10
-//!
+//! Note: On ESP32-C2 and ESP32-C3 you need a wifi-heap size of 70000, on
+//! ESP32-C6 you need 80000 and a tx_queue_size of 10
 
 //% FEATURES: esp-wifi esp-wifi/wifi esp-wifi/smoltcp esp-wifi/ble esp-wifi/coex esp-hal/unstable
 //% CHIPS: esp32 esp32s3 esp32c2 esp32c3 esp32c6
@@ -49,6 +49,8 @@ use smoltcp::{
     wire::{DhcpOption, IpAddress},
 };
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 
@@ -72,13 +74,12 @@ fn main() -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let mut rng = Rng::new(peripherals.RNG);
-
-    let esp_wifi_ctrl = init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap();
+    let esp_wifi_ctrl = init(timg0.timer0).unwrap();
 
     let now = || time::Instant::now().duration_since_epoch().as_millis();
 
-    // initializing Bluetooth first results in a more stable WiFi connection on ESP32
+    // initializing Bluetooth first results in a more stable WiFi connection on
+    // ESP32
     let connector = BleConnector::new(&esp_wifi_ctrl, peripherals.BT);
     let hci = HciConnector::new(connector, now);
     let mut ble = Ble::new(&hci);
@@ -120,6 +121,7 @@ fn main() -> ! {
     }]);
     socket_set.add(dhcp_socket);
 
+    let rng = Rng::new();
     let stack = Stack::new(iface, device, socket_set, now, rng.random());
 
     let client_config = Configuration::Client(ClientConfiguration {

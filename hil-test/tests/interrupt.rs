@@ -23,6 +23,8 @@ use esp_hal::{
 };
 use hil_test as _;
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 static SWINT0: Mutex<RefCell<Option<SoftwareInterrupt<0>>>> = Mutex::new(RefCell::new(None));
 
 #[allow(unused)] // TODO: Remove attribute when interrupt latency test re-enabled
@@ -77,7 +79,7 @@ mod tests {
             }
         }
 
-        let sw0_trigger_addr = cpu_intr.register_block().cpu_intr_from_cpu_0() as *const _ as u32;
+        let sw0_trigger_addr = cpu_intr.register_block().cpu_intr_from_cpu(0) as *const _ as u32;
 
         critical_section::with(|cs| {
             SWINT0

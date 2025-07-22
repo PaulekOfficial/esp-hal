@@ -1,60 +1,43 @@
-use std::env;
+use std::{env, error::Error};
 
-use chrono::{TimeZone, Utc};
-use esp_config::{ConfigOption, Stability, Validator, Value, generate_config};
+use esp_config::generate_config_from_yaml_definition;
+use jiff::Timestamp;
 
-fn main() {
+#[macro_export]
+macro_rules! assert_unique_features {
+    ($($feature:literal),+ $(,)?) => {
+        assert!(
+            (0 $(+ cfg!(feature = $feature) as usize)+ ) <= 1,
+            "Exactly zero or one of the following features must be enabled: {}",
+            [$($feature),+].join(", ")
+        );
+    };
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    println!("cargo::rustc-check-cfg=cfg(embedded_test)");
+
+    // Log and defmt are mutually exclusive features. The main technical reason is
+    // that allowing both would make the exact panicking behaviour a fragile
+    // implementation detail.
+    assert_unique_features!("log-04", "defmt");
+
     let build_time = match env::var("SOURCE_DATE_EPOCH") {
-        Ok(val) => Utc.timestamp_opt(val.parse::<i64>().unwrap(), 0).unwrap(),
-        Err(_) => Utc::now(),
+        Ok(val) => Timestamp::from_microsecond(val.parse::<i64>()?).unwrap(),
+        Err(_) => Timestamp::now(),
     };
 
-    let build_time_formatted = build_time.format("%H:%M:%S").to_string();
-    let build_date_formatted = build_time.format("%Y-%m-%d").to_string();
+    let build_time_formatted = build_time.strftime("%H:%M:%S");
+    let build_date_formatted = build_time.strftime("%Y-%m-%d");
 
     println!("cargo::rustc-env=ESP_BOOTLOADER_BUILD_TIME={build_time_formatted}");
     println!("cargo::rustc-env=ESP_BOOTLOADER_BUILD_DATE={build_date_formatted}");
 
     // emit config
-    generate_config(
-        "esp-bootloader-esp-idf",
-        &[
-            ConfigOption {
-                name: "mmu_page_size",
-                description: "ESP32-C2, ESP32-C6 and ESP32-H2 support configurable page sizes. \
-                This is currently only used to populate the app descriptor.",
-                default_value: Value::String(String::from("64k")),
-                constraint: Some(Validator::Enumeration(vec![
-                    String::from("8k"),
-                    String::from("16k"),
-                    String::from("32k"),
-                    String::from("64k"),
-                ])),
-                stability: Stability::Unstable,
-                active: true, // TODO we need to know the device here
-            },
-            ConfigOption {
-                name: "esp_idf_version",
-                description: "ESP-IDF version used in the application descriptor. Currently it's \
-                not checked by the bootloader.",
-                default_value: Value::String(String::from("0.0.0")),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "partition-table-offset",
-                description: "The address of partition table (by default 0x8000). Allows you to \
-                move the partition table, it gives more space for the bootloader. Note that the \
-                bootloader and app will both need to be compiled with the same |
-                PARTITION_TABLE_OFFSET value.",
-                default_value: Value::Integer(0x8000),
-                constraint: Some(Validator::PositiveInteger),
-                stability: Stability::Unstable,
-                active: true,
-            },
-        ],
-        true,
-        true,
-    );
+    println!("cargo:rerun-if-changed=./esp_config.yml");
+    let cfg_yaml = std::fs::read_to_string("./esp_config.yml")
+        .expect("Failed to read esp_config.yml for esp-bootloader-esp-idf");
+    generate_config_from_yaml_definition(&cfg_yaml, true, true, None).unwrap();
+
+    Ok(())
 }

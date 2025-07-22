@@ -8,11 +8,13 @@
 //!   - connect to it using a static IP in range 192.168.2.2 .. 192.168.2.255, gateway 192.168.2.1
 //!   - open http://192.168.2.1:8080/ in your browser
 //! - or:
-//!   - connect to the network referenced by the SSID env variable and open the IP address printed by the example
+//!   - connect to the network referenced by the SSID env variable and open the IP address printed
+//!     by the example
 //! - the example will perform an HTTP get request to some "random" server and return the response
 //!
-//! On Android you might need to choose _Keep Accesspoint_ when it tells you the WiFi has no internet connection, Chrome might not want to load the URL - you can use a shell and try `curl` and `ping`
-//!
+//! On Android you might need to choose _Keep Accesspoint_ when it tells you the
+//! WiFi has no internet connection, Chrome might not want to load the URL - you
+//! can use a shell and try `curl` and `ping`
 
 //% FEATURES: embassy esp-wifi esp-wifi/wifi esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c6
@@ -51,6 +53,8 @@ use esp_wifi::{
     },
 };
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 
@@ -73,12 +77,8 @@ async fn main(spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let mut rng = Rng::new(peripherals.RNG);
 
-    let esp_wifi_ctrl = &*mk_static!(
-        EspWifiController<'static>,
-        init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap()
-    );
+    let esp_wifi_ctrl = &*mk_static!(EspWifiController<'static>, init(timg0.timer0).unwrap());
 
     let (mut controller, interfaces) =
         esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
@@ -104,6 +104,7 @@ async fn main(spawner: Spawner) -> ! {
     });
     let sta_config = embassy_net::Config::dhcpv4(Default::default());
 
+    let rng = Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
     // Init network stacks
@@ -183,9 +184,10 @@ async fn main(spawner: Spawner) -> ! {
 
     loop {
         println!("Wait for connection...");
-        // FIXME: If connections are attempted on both sockets at the same time, we might end up
-        // dropping one of them. Might be better to spawn both accept() calls, or use fused futures?
-        // Note that we only attempt to serve one connection at a time, so we don't run out of ram.
+        // FIXME: If connections are attempted on both sockets at the same time, we
+        // might end up dropping one of them. Might be better to spawn both
+        // accept() calls, or use fused futures? Note that we only attempt to
+        // serve one connection at a time, so we don't run out of ram.
         let either_socket = embassy_futures::select::select(
             ap_server_socket.accept(IpListenEndpoint {
                 addr: None,

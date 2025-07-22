@@ -13,9 +13,10 @@
 //! Connect MISO and MOSI pins to see the outgoing data is read as incoming
 //! data.
 //!
-//! If your module is octal PSRAM then you need to set `ESP_HAL_CONFIG_PSRAM_MODE` to `octal`.
+//! If your module is octal PSRAM then you need to set
+//! `ESP_HAL_CONFIG_PSRAM_MODE` to `octal`.
 
-//% FEATURES: esp-hal/log esp-hal/psram esp-hal/unstable
+//% FEATURES: esp-hal/psram esp-hal/unstable
 //% CHIPS: esp32s3
 
 #![no_std]
@@ -34,6 +35,8 @@ use esp_hal::{
 };
 extern crate alloc;
 use log::*;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 macro_rules! dma_alloc_buffer {
     ($size:expr, $align:expr) => {{

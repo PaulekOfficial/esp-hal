@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # Software Interrupts
 //!
 //! The [`SoftwareInterruptControl`] struct gives access to the available
@@ -10,9 +11,8 @@
 //! ## Examples
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
-//! let sw_ints =
-//!     SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+//! # {before_snippet}
+//! let sw_ints = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
 //!
 //! // Take the interrupt you want to use.
 //! let mut int0 = sw_ints.software_interrupt0;
@@ -23,8 +23,7 @@
 //!     int0.set_interrupt_handler(swint0_handler);
 //!     SWINT0.borrow_ref_mut(cs).replace(int0);
 //! });
-//! # Ok(())
-//! # }
+//! # {after_snippet}
 //!
 //! # use core::cell::RefCell;
 //! # use critical_section::Mutex;
@@ -32,8 +31,7 @@
 //! // ... somewhere outside of your main function
 //!
 //! // Define a shared handle to the software interrupt.
-//! static SWINT0: Mutex<RefCell<Option<SoftwareInterrupt<0>>>> =
-//!     Mutex::new(RefCell::new(None));
+//! static SWINT0: Mutex<RefCell<Option<SoftwareInterrupt<0>>>> = Mutex::new(RefCell::new(None));
 //!
 //! #[handler]
 //! fn swint0_handler() {
@@ -76,6 +74,10 @@ impl<const NUM: u8> SoftwareInterrupt<'_, NUM> {
     ///
     /// Use this method if you would like to keep working with the peripheral
     /// after you dropped the driver that consumes this.
+    ///
+    /// See [Peripheral singleton] section for more information.
+    ///
+    /// [Peripheral singleton]: crate#peripheral-singletons
     pub fn reborrow(&mut self) -> SoftwareInterrupt<'_, NUM> {
         unsafe { SoftwareInterrupt::steal() }
     }
@@ -108,21 +110,15 @@ impl<const NUM: u8> SoftwareInterrupt<'_, NUM> {
             }
         }
 
-        match NUM {
-            0 => system
-                .cpu_intr_from_cpu_0()
-                .write(|w| w.cpu_intr_from_cpu_0().set_bit()),
-            1 => system
-                .cpu_intr_from_cpu_1()
-                .write(|w| w.cpu_intr_from_cpu_1().set_bit()),
-            2 => system
-                .cpu_intr_from_cpu_2()
-                .write(|w| w.cpu_intr_from_cpu_2().set_bit()),
-            3 => system
-                .cpu_intr_from_cpu_3()
-                .write(|w| w.cpu_intr_from_cpu_3().set_bit()),
+        let reg = match NUM {
+            0 => system.cpu_intr_from_cpu(0),
+            1 => system.cpu_intr_from_cpu(1),
+            2 => system.cpu_intr_from_cpu(2),
+            3 => system.cpu_intr_from_cpu(3),
             _ => unreachable!(),
         };
+
+        reg.write(|w| w.cpu_intr().set_bit());
     }
 
     /// Resets this software-interrupt
@@ -135,21 +131,15 @@ impl<const NUM: u8> SoftwareInterrupt<'_, NUM> {
             }
         }
 
-        match NUM {
-            0 => system
-                .cpu_intr_from_cpu_0()
-                .write(|w| w.cpu_intr_from_cpu_0().clear_bit()),
-            1 => system
-                .cpu_intr_from_cpu_1()
-                .write(|w| w.cpu_intr_from_cpu_1().clear_bit()),
-            2 => system
-                .cpu_intr_from_cpu_2()
-                .write(|w| w.cpu_intr_from_cpu_2().clear_bit()),
-            3 => system
-                .cpu_intr_from_cpu_3()
-                .write(|w| w.cpu_intr_from_cpu_3().clear_bit()),
+        let reg = match NUM {
+            0 => system.cpu_intr_from_cpu(0),
+            1 => system.cpu_intr_from_cpu(1),
+            2 => system.cpu_intr_from_cpu(2),
+            3 => system.cpu_intr_from_cpu(3),
             _ => unreachable!(),
         };
+
+        reg.write(|w| w.cpu_intr().clear_bit());
     }
 }
 
@@ -180,11 +170,13 @@ pub struct SoftwareInterruptControl<'d> {
     pub software_interrupt0: SoftwareInterrupt<'d, 0>,
     /// Software interrupt 1.
     pub software_interrupt1: SoftwareInterrupt<'d, 1>,
-    /// Software interrupt 2.
+    /// Software interrupt 2. Not available when using esp-wifi's builtin
+    /// scheduler on RISC-V architectures.
+    #[cfg(not(all(feature = "__esp_wifi_builtin_scheduler", riscv)))]
     pub software_interrupt2: SoftwareInterrupt<'d, 2>,
     #[cfg(not(all(feature = "__esp_hal_embassy", multi_core)))]
-    /// Software interrupt 3. Only available when not using `esp-hal-embassy`,
-    /// or on single-core systems.
+    /// Software interrupt 3. Not available when using `esp-hal-embassy`,
+    /// on multi-core systems.
     pub software_interrupt3: SoftwareInterrupt<'d, 3>,
 }
 
@@ -198,6 +190,7 @@ impl<'d> SoftwareInterruptControl<'d> {
             software_interrupt1: SoftwareInterrupt {
                 _lifetime: PhantomData,
             },
+            #[cfg(not(all(feature = "__esp_wifi_builtin_scheduler", riscv)))]
             software_interrupt2: SoftwareInterrupt {
                 _lifetime: PhantomData,
             },

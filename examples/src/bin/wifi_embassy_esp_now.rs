@@ -15,13 +15,15 @@ use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Ticker};
 use esp_alloc as _;
 use esp_backtrace as _;
-use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup};
+use esp_hal::{clock::CpuClock, timer::timg::TimerGroup};
 use esp_println::println;
 use esp_wifi::{
     EspWifiController,
     esp_now::{BROADCAST_ADDRESS, PeerInfo},
     init,
 };
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -43,15 +45,7 @@ async fn main(_spawner: Spawner) -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let esp_wifi_ctrl = &*mk_static!(
-        EspWifiController<'static>,
-        init(
-            timg0.timer0,
-            Rng::new(peripherals.RNG),
-            peripherals.RADIO_CLK,
-        )
-        .unwrap()
-    );
+    let esp_wifi_ctrl = &*mk_static!(EspWifiController<'static>, init(timg0.timer0).unwrap());
 
     let wifi = peripherals.WIFI;
     let (mut controller, interfaces) = esp_wifi::wifi::new(&esp_wifi_ctrl, wifi).unwrap();

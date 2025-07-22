@@ -4,8 +4,7 @@
 //!
 //! This crate provides:
 //!
-//! - Before main initialization of the `.bss` and `.data` sections controlled
-//!   by features
+//! - Before main initialization of the `.bss` and `.data` sections controlled by features
 //! - `#[entry]` to declare the entry point of the program
 //!
 //! ## Feature Flags
@@ -17,10 +16,7 @@
 use core::arch::global_asm;
 
 pub use riscv;
-use riscv::register::{
-    mcause,
-    mtvec::{self, TrapMode},
-};
+use riscv::register::{mcause, mtvec};
 pub use riscv_rt_macros::{entry, pre_init};
 
 pub use self::Interrupt as interrupt;
@@ -298,7 +294,14 @@ pub unsafe extern "Rust" fn default_setup_interrupts() { unsafe {
         fn _start_trap();
     }
 
-    mtvec::write(_start_trap as usize, TrapMode::Direct);
+    mtvec::write(
+        {
+            let mut mtvec = mtvec::Mtvec::from_bits(0);
+            mtvec.set_trap_mode(mtvec::TrapMode::Vectored);
+            mtvec.set_address(_start_trap as usize);
+            mtvec
+        }
+    );
 }}
 
 /// Parse cfg attributes inside a global_asm call.

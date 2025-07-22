@@ -9,10 +9,12 @@ use esp_hal::main;
 use esp_ieee802154::{Config, Ieee802154};
 use esp_println::println;
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    let mut ieee802154 = Ieee802154::new(peripherals.IEEE802154, peripherals.RADIO_CLK);
+    let mut ieee802154 = Ieee802154::new(peripherals.IEEE802154);
 
     ieee802154.set_config(Config {
         channel: 15,

@@ -1,8 +1,8 @@
 [package]
 name = "xtensa-lx-rt-proc-macros"
-version = "0.2.2"
+version = "0.4.0"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.86.0"
 description = "Attributes re-exported in `xtensa-lx-rt`"
 documentation = "https://docs.espressif.com/projects/rust/xtensa-lx-rt-proc-macros/latest/"
 repository = "https://github.com/esp-rs/esp-hal"
@@ -14,7 +14,6 @@ categories = ["embedded", "no-std"]
 proc-macro = true
 
 [dependencies]
-darling = "0.20.11"
 proc-macro2 = "1.0.95"
 quote = "1.0"
-syn = { version = "2.0", features = ["extra-traits", "full"] }
+syn = { version = "2.0", default-features = false, features = ["full", "parsing", "printing", "proc-macro", "clone-impls"] }

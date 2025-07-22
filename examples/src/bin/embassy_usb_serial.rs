@@ -28,6 +28,8 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     esp_println::println!("Init!");
@@ -94,7 +96,8 @@ async fn main(_spawner: Spawner) {
     };
 
     // Run everything concurrently.
-    // If we had made everything `'static` above instead, we could do this using separate tasks instead.
+    // If we had made everything `'static` above instead, we could do this using
+    // separate tasks instead.
     join(usb_fut, echo_fut).await;
 }
 

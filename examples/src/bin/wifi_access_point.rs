@@ -1,12 +1,14 @@
 //! Access point
 //!
 //! Creates an open access-point with SSID `esp-wifi`.
-//! You can connect to it using a static IP in range 192.168.2.2 .. 192.168.2.255, gateway 192.168.2.1
+//! You can connect to it using a static IP in range 192.168.2.2 ..
+//! 192.168.2.255, gateway 192.168.2.1
 //!
 //! Open http://192.168.2.1:8080/ in your browser
 //!
-//! On Android you might need to choose _Keep Accesspoint_ when it tells you the WiFi has no internet connection, Chrome might not want to load the URL - you can use a shell and try `curl` and `ping`
-//!
+//! On Android you might need to choose _Keep Accesspoint_ when it tells you the
+//! WiFi has no internet connection, Chrome might not want to load the URL - you
+//! can use a shell and try `curl` and `ping`
 
 //% FEATURES: esp-wifi esp-wifi/wifi esp-wifi/smoltcp esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c6
@@ -36,6 +38,8 @@ use esp_wifi::{
 };
 use smoltcp::iface::{SocketSet, SocketStorage};
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 #[main]
 fn main() -> ! {
     esp_println::logger::init_logger_from_env();
@@ -64,9 +68,7 @@ fn main() -> ! {
         );
     });
 
-    let mut rng = Rng::new(peripherals.RNG);
-
-    let esp_wifi_ctrl = init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap();
+    let esp_wifi_ctrl = init(timg0.timer0).unwrap();
 
     let (mut controller, interfaces) =
         esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
@@ -76,6 +78,7 @@ fn main() -> ! {
 
     let now = || time::Instant::now().duration_since_epoch().as_millis();
 
+    let rng = Rng::new();
     let mut socket_set_entries: [SocketStorage; 3] = Default::default();
     let socket_set = SocketSet::new(&mut socket_set_entries[..]);
     let mut stack = Stack::new(iface, device, socket_set, now, rng.random());

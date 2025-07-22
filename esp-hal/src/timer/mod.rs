@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # General-purpose Timers
 //!
 //! ## Overview
@@ -6,29 +7,28 @@
 //! can be used to interact with different hardware timers, like the `TIMG` and
 //! SYSTIMER.
 #![cfg_attr(
-    not(feature = "esp32"),
+    systimer,
     doc = "See the [timg] and [systimer] modules for more information."
 )]
-#![cfg_attr(feature = "esp32", doc = "See the [timg] module for more information.")]
+#![cfg_attr(not(systimer), doc = "See the [timg] module for more information.")]
 //! ## Examples
 //!
 //! ### One-shot Timer
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::timer::{OneShotTimer, PeriodicTimer, timg::TimerGroup};
 //! #
 //! let timg0 = TimerGroup::new(peripherals.TIMG0);
 //! let mut one_shot = OneShotTimer::new(timg0.timer0);
 //!
 //! one_shot.delay_millis(500);
-//! # Ok(())
-//! # }
+//! # {after_snippet}
 //! ```
-//! 
+//!
 //! ### Periodic Timer
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::timer::{PeriodicTimer, timg::TimerGroup};
 //! #
 //! let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -36,7 +36,7 @@
 //!
 //! periodic.start(Duration::from_secs(1));
 //! loop {
-//!    periodic.wait();
+//!     periodic.wait();
 //! }
 //! # }
 //! ```
@@ -60,7 +60,7 @@ use crate::{
 
 #[cfg(systimer)]
 pub mod systimer;
-#[cfg(any(timg0, timg1))]
+#[cfg(timergroup)]
 pub mod timg;
 
 /// Timer errors.
@@ -416,6 +416,7 @@ where
 crate::any_peripheral! {
     /// Any Timer peripheral.
     pub peripheral AnyTimer<'d> {
+        #[cfg(timergroup)]
         TimgTimer(timg::Timer<'d>),
         #[cfg(systimer)]
         SystimerAlarm(systimer::Alarm<'d>),
@@ -425,9 +426,9 @@ crate::any_peripheral! {
 impl Timer for AnyTimer<'_> {
     delegate::delegate! {
         to match &self.0 {
-            AnyTimerInner::TimgTimer(inner) => inner,
+            any::Inner::TimgTimer(inner) => inner,
             #[cfg(systimer)]
-            AnyTimerInner::SystimerAlarm(inner) => inner,
+            any::Inner::SystimerAlarm(inner) => inner,
         } {
             fn start(&self);
             fn stop(&self);

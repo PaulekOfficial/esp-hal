@@ -50,7 +50,7 @@
 //!         PSRAM_ALLOCATOR.add_region(esp_alloc::HeapRegion::new(
 //!             psram::psram_vaddr_start() as *mut u8,
 //!             psram::PSRAM_BYTES,
-//!             esp_alloc::MemoryCapability::Internal.into(),
+//!             esp_alloc::MemoryCapability::External.into(),
 //!         ));
 //!     }
 //! }
@@ -91,7 +91,7 @@
 //! you will need it for the `Box` and `Vec` types.
 //!
 //! ```toml
-//! allocator-api2 = { version = "0.2", default-features = false, features = ["alloc"] }
+//! allocator-api2 = { version = "0.3", default-features = false, features = ["alloc"] }
 //! ```
 //!
 //! With this, you can use the `Box` and `Vec` types from `allocator_api2`, with
@@ -107,6 +107,11 @@
 //! vec.push(0xabcd1234);
 //! assert_eq!(vec[0], 0xabcd1234);
 //! ```
+//!
+//! Note that if you use the nightly `allocator_api` feature, you can use the
+//! `Box` and `Vec` types from `alloc`. `allocator_api2` is still available as
+//! an option, but types from `allocator_api2` are not compatible with the
+//! standard library types.
 //!
 //! # Heap stats
 //!
@@ -130,8 +135,6 @@
 //! Total allocated: 46148
 //! Memory Layout:
 //! Internal | ████████████░░░░░░░░░░░░░░░░░░░░░░░ | Used: 35% (Used 46148 of 131068, free: 84920)
-//! Unused   | ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ |
-//! Unused   | ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ |
 //! ```
 //! ## Feature Flags
 #![doc = document_features::document_features!()]
@@ -189,16 +192,16 @@ pub enum MemoryCapability {
 #[derive(Debug)]
 pub struct RegionStats {
     /// Total usable size of the heap region in bytes.
-    size: usize,
+    pub size: usize,
 
     /// Currently used size of the heap region in bytes.
-    used: usize,
+    pub used: usize,
 
     /// Free size of the heap region in bytes.
-    free: usize,
+    pub free: usize,
 
     /// Capabilities of the memory region.
-    capabilities: EnumSet<MemoryCapability>,
+    pub capabilities: EnumSet<MemoryCapability>,
 }
 
 impl Display for RegionStats {
@@ -265,10 +268,8 @@ impl HeapRegion {
     ///
     /// # Safety
     ///
-    /// - The supplied memory region must be available for the entire program
-    ///   (`'static`).
-    /// - The supplied memory region must be exclusively available to the heap
-    ///   only, no aliasing.
+    /// - The supplied memory region must be available for the entire program (`'static`).
+    /// - The supplied memory region must be exclusively available to the heap only, no aliasing.
     /// - `size > 0`.
     pub unsafe fn new(
         heap_bottom: *mut u8,
@@ -301,25 +302,25 @@ impl HeapRegion {
 #[derive(Debug)]
 pub struct HeapStats {
     /// Granular stats for all the configured memory regions.
-    region_stats: [Option<RegionStats>; 3],
+    pub region_stats: [Option<RegionStats>; 3],
 
     /// Total size of all combined heap regions in bytes.
-    size: usize,
+    pub size: usize,
 
     /// Current usage of the heap across all configured regions in bytes.
-    current_usage: usize,
+    pub current_usage: usize,
 
     /// Estimation of the max used heap in bytes.
     #[cfg(feature = "internal-heap-stats")]
-    max_usage: usize,
+    pub max_usage: usize,
 
     /// Estimation of the total allocated bytes since initialization.
     #[cfg(feature = "internal-heap-stats")]
-    total_allocated: usize,
+    pub total_allocated: usize,
 
     /// Estimation of the total freed bytes since initialization.
     #[cfg(feature = "internal-heap-stats")]
-    total_freed: usize,
+    pub total_freed: usize,
 }
 
 impl Display for HeapStats {
@@ -338,11 +339,6 @@ impl Display for HeapStats {
             if let Some(region) = region.as_ref() {
                 region.fmt(f)?;
                 writeln!(f)?;
-            } else {
-                // Display unused memory regions
-                write!(f, "Unused   | ")?;
-                write_bar(f, 0)?;
-                writeln!(f, " |")?;
             }
         }
         Ok(())
@@ -365,10 +361,6 @@ impl defmt::Format for HeapStats {
         for region in self.region_stats.iter() {
             if let Some(region) = region.as_ref() {
                 defmt::write!(fmt, "{}\n", region);
-            } else {
-                defmt::write!(fmt, "Unused   | ");
-                write_bar_defmt(fmt, 0);
-                defmt::write!(fmt, " |\n");
             }
         }
     }
@@ -418,18 +410,17 @@ impl EspHeap {
     ///
     /// - Memory is allocated from the first suitable memory region first
     ///
-    /// - The heap grows "upwards", towards larger addresses. Thus `end_addr`
-    ///   must be larger than `start_addr`
+    /// - The heap grows "upwards", towards larger addresses. Thus `end_addr` must be larger than
+    ///   `start_addr`
     ///
-    /// - The size of the heap is `(end_addr as usize) - (start_addr as usize)`.
-    ///   The allocator won't use the byte at `end_addr`.
+    /// - The size of the heap is `(end_addr as usize) - (start_addr as usize)`. The allocator won't
+    ///   use the byte at `end_addr`.
     ///
     /// # Safety
     ///
-    /// - The supplied memory region must be available for the entire program (a
-    ///   `'static` lifetime).
-    /// - The supplied memory region must be exclusively available to the heap
-    ///   only, no aliasing.
+    /// - The supplied memory region must be available for the entire program (a `'static`
+    ///   lifetime).
+    /// - The supplied memory region must be exclusively available to the heap only, no aliasing.
     /// - `size > 0`.
     pub unsafe fn add_region(&self, region: HeapRegion) {
         critical_section::with(|cs| {

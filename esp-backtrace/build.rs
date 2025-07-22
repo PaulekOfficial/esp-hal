@@ -1,12 +1,17 @@
-use esp_build::assert_unique_used_features;
-use esp_config::{ConfigOption, Stability, Value, generate_config};
+use esp_config::generate_config_from_yaml_definition;
+
+#[macro_export]
+macro_rules! assert_unique_used_features {
+    ($($feature:literal),+ $(,)?) => {
+        assert!(
+            (0 $(+ cfg!(feature = $feature) as usize)+ ) == 1,
+            "Exactly one of the following features must be enabled: {}",
+            [$($feature),+].join(", ")
+        );
+    };
+}
 
 fn main() {
-    // Ensure that only a single chip is specified:
-    assert_unique_used_features!(
-        "esp32", "esp32c2", "esp32c3", "esp32c6", "esp32h2", "esp32p4", "esp32s2", "esp32s3"
-    );
-
     // Ensure that exactly a backend is selected:
     assert_unique_used_features!("defmt", "println");
 
@@ -15,17 +20,8 @@ fn main() {
     }
 
     // emit config
-    generate_config(
-        "esp_backtrace",
-        &[ConfigOption {
-            name: "backtrace-frames",
-            description: "The maximum number of frames that will be printed in a backtrace",
-            default_value: Value::Integer(10),
-            constraint: None,
-            stability: Stability::Unstable,
-            active: true,
-        }],
-        true,
-        true,
-    );
+    println!("cargo:rerun-if-changed=./esp_config.yml");
+    let cfg_yaml = std::fs::read_to_string("./esp_config.yml")
+        .expect("Failed to read esp_config.yml for esp-backtrace");
+    generate_config_from_yaml_definition(&cfg_yaml, true, true, None).unwrap();
 }

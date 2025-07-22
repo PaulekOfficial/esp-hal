@@ -1,14 +1,15 @@
 [package]
 name          = "esp-riscv-rt"
-version       = "0.10.0"
+version       = "0.12.0"
 edition       = "2024"
-rust-version  = "1.85.0"
+rust-version  = "1.86.0"
 description   = "Minimal runtime / startup for RISC-V CPUs from Espressif"
 documentation = "https://docs.espressif.com/projects/rust/esp-riscv-rt/latest/"
 keywords      = ["esp32", "espressif", "riscv", "runtime", "startup"]
 categories    = ["embedded", "hardware-support", "no-std"]
 repository    = "https://github.com/esp-rs/esp-hal"
 license       = "MIT OR Apache-2.0"
+links         = "esp-riscv-rt"
 
 [lib]
 bench = false
@@ -16,11 +17,11 @@ test  = false
 
 [dependencies]
 document-features = "0.2.11"
-riscv             = "0.12.1"
-riscv-rt-macros   = "0.4.0"
+riscv             = "0.14.0"
+riscv-rt-macros   = "0.5.0"
 
 [features]
-## Indicate that the device supports `mie` and `mip` instructions.
+## Indicate that the device supports `mie` and `mip` CSRs.
 has-mie-mip = []
 ## Indicate that the device has RTC RAM.
 rtc-ram = []

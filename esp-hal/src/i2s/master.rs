@@ -1,3 +1,14 @@
+#![cfg_attr(docsrs, procmacros::doc_replace(
+    "dma_channel" => {
+        cfg(any(esp32, esp32s2)) => "let dma_channel = peripherals.DMA_I2S0;",
+        cfg(not(any(esp32, esp32s2))) => "let dma_channel = peripherals.DMA_CH0;"
+    },
+    "mclk" => {
+        cfg(not(esp32)) => "let i2s = i2s.with_mclk(peripherals.GPIO0);",
+        _ => ""
+    }
+
+))]
 //! # Inter-IC Sound (I2S)
 //!
 //! ## Overview
@@ -28,14 +39,10 @@
 //! ### I2S Read
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::i2s::master::{I2s, Standard, DataFormat};
 //! # use esp_hal::dma_buffers;
-#![cfg_attr(any(esp32, esp32s2), doc = "let dma_channel = peripherals.DMA_I2S0;")]
-#![cfg_attr(
-    not(any(esp32, esp32s2)),
-    doc = "let dma_channel = peripherals.DMA_CH0;"
-)]
+//! # {dma_channel}
 //! let (mut rx_buffer, rx_descriptors, _, _) = dma_buffers!(4 * 4092, 0);
 //!
 //! let i2s = I2s::new(
@@ -45,8 +52,9 @@
 //!     Rate::from_hz(44100),
 //!     dma_channel,
 //! );
-#![cfg_attr(not(esp32), doc = "let i2s = i2s.with_mclk(peripherals.GPIO0);")]
-//! let mut i2s_rx = i2s.i2s_rx
+//! # {mclk}
+//! let mut i2s_rx = i2s
+//!     .i2s_rx
 //!     .with_bclk(peripherals.GPIO1)
 //!     .with_ws(peripherals.GPIO2)
 //!     .with_din(peripherals.GPIO5)
@@ -64,7 +72,7 @@
 //! }
 //! # }
 //! ```
-//! 
+//!
 //! ## Implementation State
 //!
 //! - Only TDM Philips standard is supported.
@@ -322,7 +330,6 @@ where
 impl<'d> I2s<'d, Blocking> {
     /// Construct a new I2S peripheral driver instance for the first I2S
     /// peripheral
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         i2s: impl Instance + 'd,
         standard: Standard,
@@ -601,7 +608,7 @@ where
     {
         let (ptr, len) = unsafe { words.write_buffer() };
 
-        if len % 4 != 0 {
+        if !len.is_multiple_of(4) {
             return Err(Error::IllegalArgument);
         }
 
@@ -668,9 +675,10 @@ where
 }
 
 /// A peripheral singleton compatible with the I2S master driver.
-pub trait Instance: RegisterAccessPrivate + super::IntoAnyI2s {}
+pub trait Instance: RegisterAccessPrivate + super::any::Degrade {}
+#[cfg(soc_has_i2s0)]
 impl Instance for crate::peripherals::I2S0<'_> {}
-#[cfg(i2s1)]
+#[cfg(soc_has_i2s1)]
 impl Instance for crate::peripherals::I2S1<'_> {}
 impl Instance for AnyI2s<'_> {}
 
@@ -678,7 +686,7 @@ mod private {
     use enumset::EnumSet;
 
     use super::*;
-    #[cfg(not(i2s1))]
+    #[cfg(not(soc_has_i2s1))]
     use crate::pac::i2s0::RegisterBlock;
     use crate::{
         DriverMode,
@@ -690,13 +698,13 @@ mod private {
             OutputSignal,
             interconnect::{PeripheralInput, PeripheralOutput},
         },
-        i2s::AnyI2sInner,
+        i2s::any::Inner as AnyI2sInner,
         interrupt::InterruptHandler,
-        peripherals::{I2S0, Interrupt},
+        peripherals::I2S0,
     };
     // on ESP32-S3 I2S1 doesn't support all features - use that to avoid using those features
     // by accident
-    #[cfg(i2s1)]
+    #[cfg(soc_has_i2s1)]
     use crate::{pac::i2s1::RegisterBlock, peripherals::I2S1};
 
     pub struct TxCreator<'d, Dm>
@@ -831,8 +839,6 @@ mod private {
 
     #[cfg(any(esp32, esp32s2))]
     pub trait RegisterAccessPrivate: Signals + RegBlock {
-        fn set_interrupt_handler(&self, handler: InterruptHandler);
-
         fn enable_listen(&self, interrupts: EnumSet<I2sInterrupt>, enable: bool) {
             self.regs().int_ena().modify(|_, w| {
                 for interrupt in interrupts {
@@ -1064,8 +1070,6 @@ mod private {
 
     #[cfg(any(esp32c3, esp32c6, esp32h2, esp32s3))]
     pub trait RegisterAccessPrivate: Signals + RegBlock {
-        fn set_interrupt_handler(&self, handler: InterruptHandler);
-
         fn enable_listen(&self, interrupts: EnumSet<I2sInterrupt>, enable: bool) {
             self.regs().int_ena().modify(|_, w| {
                 for interrupt in interrupts {
@@ -1511,18 +1515,7 @@ mod private {
         }
     }
 
-    impl RegisterAccessPrivate for I2S0<'_> {
-        fn set_interrupt_handler(&self, handler: InterruptHandler) {
-            for core in crate::system::Cpu::other() {
-                crate::interrupt::disable(core, Interrupt::I2S0);
-            }
-            unsafe { crate::peripherals::I2S0::steal() }.bind_i2s0_interrupt(handler.handler());
-            unwrap!(crate::interrupt::enable(
-                Interrupt::I2S0,
-                handler.priority()
-            ));
-        }
-    }
+    impl RegisterAccessPrivate for I2S0<'_> {}
 
     impl Signals for crate::peripherals::I2S0<'_> {
         fn mclk_signal(&self) -> OutputSignal {
@@ -1608,7 +1601,7 @@ mod private {
         }
     }
 
-    #[cfg(i2s1)]
+    #[cfg(soc_has_i2s1)]
     impl RegBlock for I2S1<'_> {
         fn regs(&self) -> &RegisterBlock {
             unsafe { &*I2S1::PTR.cast::<RegisterBlock>() }
@@ -1619,21 +1612,10 @@ mod private {
         }
     }
 
-    #[cfg(i2s1)]
-    impl RegisterAccessPrivate for I2S1<'_> {
-        fn set_interrupt_handler(&self, handler: InterruptHandler) {
-            for core in crate::system::Cpu::other() {
-                crate::interrupt::disable(core, Interrupt::I2S1);
-            }
-            unsafe { crate::peripherals::I2S1::steal() }.bind_i2s1_interrupt(handler.handler());
-            unwrap!(crate::interrupt::enable(
-                Interrupt::I2S1,
-                handler.priority()
-            ));
-        }
-    }
+    #[cfg(soc_has_i2s1)]
+    impl RegisterAccessPrivate for I2S1<'_> {}
 
-    #[cfg(i2s1)]
+    #[cfg(soc_has_i2s1)]
     impl Signals for crate::peripherals::I2S1<'_> {
         fn mclk_signal(&self) -> OutputSignal {
             cfg_if::cfg_if! {
@@ -1685,16 +1667,18 @@ mod private {
     impl RegBlock for super::AnyI2s<'_> {
         fn regs(&self) -> &RegisterBlock {
             match &self.0 {
+                #[cfg(soc_has_i2s0)]
                 AnyI2sInner::I2s0(i2s) => RegBlock::regs(i2s),
-                #[cfg(i2s1)]
+                #[cfg(soc_has_i2s1)]
                 AnyI2sInner::I2s1(i2s) => RegBlock::regs(i2s),
             }
         }
 
         delegate::delegate! {
             to match &self.0 {
+                #[cfg(soc_has_i2s0)]
                 AnyI2sInner::I2s0(i2s) => i2s,
-                #[cfg(i2s1)]
+                #[cfg(soc_has_i2s1)]
                 AnyI2sInner::I2s1(i2s) => i2s,
             } {
                 fn peripheral(&self) -> crate::system::Peripheral;
@@ -1702,23 +1686,35 @@ mod private {
         }
     }
 
-    impl RegisterAccessPrivate for super::AnyI2s<'_> {
+    impl RegisterAccessPrivate for super::AnyI2s<'_> {}
+
+    impl super::AnyI2s<'_> {
         delegate::delegate! {
             to match &self.0 {
+                #[cfg(soc_has_i2s0)]
                 AnyI2sInner::I2s0(i2s) => i2s,
-                #[cfg(i2s1)]
+                #[cfg(soc_has_i2s1)]
                 AnyI2sInner::I2s1(i2s) => i2s,
             } {
-                fn set_interrupt_handler(&self, handler: InterruptHandler);
+                fn bind_peri_interrupt(&self, handler: unsafe extern "C" fn() -> ());
+                fn disable_peri_interrupt(&self);
+                fn enable_peri_interrupt(&self, priority: crate::interrupt::Priority);
             }
+        }
+
+        pub(super) fn set_interrupt_handler(&self, handler: InterruptHandler) {
+            self.disable_peri_interrupt();
+            self.bind_peri_interrupt(handler.handler());
+            self.enable_peri_interrupt(handler.priority());
         }
     }
 
     impl Signals for super::AnyI2s<'_> {
         delegate::delegate! {
             to match &self.0 {
+                #[cfg(soc_has_i2s0)]
                 AnyI2sInner::I2s0(i2s) => i2s,
-                #[cfg(i2s1)]
+                #[cfg(soc_has_i2s1)]
                 AnyI2sInner::I2s1(i2s) => i2s,
             } {
                 fn mclk_signal(&self) -> OutputSignal;
@@ -1924,7 +1920,7 @@ pub mod asynch {
         pub async fn read_dma_async(&mut self, words: &mut [u8]) -> Result<(), Error> {
             let (ptr, len) = (words.as_mut_ptr(), words.len());
 
-            if len % 4 != 0 {
+            if !len.is_multiple_of(4) {
                 return Err(Error::IllegalArgument);
             }
 
@@ -1960,7 +1956,7 @@ pub mod asynch {
         {
             let (ptr, len) = unsafe { words.write_buffer() };
 
-            if len % 4 != 0 {
+            if !len.is_multiple_of(4) {
                 return Err(Error::IllegalArgument);
             }
 

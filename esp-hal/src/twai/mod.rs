@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # Two-wire Automotive Interface (TWAI)
 //!
 //! ## Overview
@@ -7,7 +8,7 @@
 //! TWAI protocol is suited for automotive and industrial applications.
 //!
 //! See ESP-IDF's
-#![doc = concat!("[TWAI documentation](https://docs.espressif.com/projects/esp-idf/en/latest/", crate::chip!(), "/api-reference/peripherals/twai.html#twai-protocol-summary)")]
+#![doc = concat!("[TWAI documentation](https://docs.espressif.com/projects/esp-idf/en/latest/", chip!(), "/api-reference/peripherals/twai.html#twai-protocol-summary)")]
 //! for a summary on the protocol.
 //!
 //! ## Configuration
@@ -24,7 +25,7 @@
 //! ### Transmitting and Receiving Messages
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::twai;
 //! # use esp_hal::twai::filter;
 //! # use esp_hal::twai::filter::SingleStandardFilter;
@@ -47,13 +48,14 @@
 //!     twai_rx_pin,
 //!     twai_tx_pin,
 //!     TWAI_BAUDRATE,
-//!     TwaiMode::Normal
+//!     TwaiMode::Normal,
 //! );
 //!
 //! // Partially filter the incoming messages to reduce overhead of receiving
 //! // undesired messages
-//! twai_config.set_filter(const { SingleStandardFilter::new(b"xxxxxxxxxx0",
-//! b"x", [b"xxxxxxxx", b"xxxxxxxx"]) });
+//! twai_config.set_filter(
+//!     const { SingleStandardFilter::new(b"xxxxxxxxxx0", b"x", [b"xxxxxxxx", b"xxxxxxxx"]) },
+//! );
 //!
 //! // Start the peripheral. This locks the configuration settings of the
 //! // peripheral and puts it into operation mode, allowing packets to be sent
@@ -69,10 +71,10 @@
 //! }
 //! # }
 //! ```
-//! 
+//!
 //! ### Self-testing (self reception of transmitted messages)
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::twai;
 //! # use esp_hal::twai::filter;
 //! # use esp_hal::twai::filter::SingleStandardFilter;
@@ -119,6 +121,8 @@
 //! ```
 
 use core::marker::PhantomData;
+
+use procmacros::handler;
 
 use self::filter::{Filter, FilterType};
 use crate::{
@@ -860,7 +864,7 @@ where
 
         // Copy the filter to the peripheral.
         unsafe {
-            copy_to_data_register(self.regs().data_0().as_ptr(), registers);
+            copy_to_data_register(self.regs().data(0).as_ptr(), registers);
         }
     }
 
@@ -1299,9 +1303,6 @@ where
 /// TWAI peripheral instance.
 #[doc(hidden)]
 pub trait PrivateInstance: crate::private::Sealed {
-    /// The identifier number for this TWAI instance.
-    fn number(&self) -> usize;
-
     /// Returns the system peripheral marker for this instance.
     fn peripheral(&self) -> crate::system::Peripheral;
 
@@ -1348,7 +1349,7 @@ pub trait PrivateInstance: crate::private::Sealed {
 /// Read a frame from the peripheral.
 fn read_frame(register_block: &RegisterBlock) -> Result<EspTwaiFrame, EspTwaiError> {
     // Read the frame information and extract the frame id format and dlc.
-    let data_0 = register_block.data_0().read().tx_byte_0().bits();
+    let data_0 = register_block.data(0).read().tx_byte().bits();
 
     let is_standard_format = data_0 & (0b1 << 7) == 0;
     let is_data_frame = data_0 & (0b1 << 6) == 0;
@@ -1367,19 +1368,19 @@ fn read_frame(register_block: &RegisterBlock) -> Result<EspTwaiFrame, EspTwaiErr
     // Read the payload from the packet and construct a frame.
     let (id, data_ptr) = if is_standard_format {
         // Frame uses standard 11 bit id.
-        let data_1 = register_block.data_1().read().tx_byte_1().bits();
-        let data_2 = register_block.data_2().read().tx_byte_2().bits();
+        let data_1 = register_block.data(1).read().tx_byte().bits();
+        let data_2 = register_block.data(2).read().tx_byte().bits();
 
         let raw_id: u16 = ((data_1 as u16) << 3) | ((data_2 as u16) >> 5);
 
         let id = Id::from(StandardId::new(raw_id).unwrap());
-        (id, register_block.data_3().as_ptr())
+        (id, register_block.data(3).as_ptr())
     } else {
         // Frame uses extended 29 bit id.
-        let data_1 = register_block.data_1().read().tx_byte_1().bits();
-        let data_2 = register_block.data_2().read().tx_byte_2().bits();
-        let data_3 = register_block.data_3().read().tx_byte_3().bits();
-        let data_4 = register_block.data_4().read().tx_byte_4().bits();
+        let data_1 = register_block.data(1).read().tx_byte().bits();
+        let data_2 = register_block.data(2).read().tx_byte().bits();
+        let data_3 = register_block.data(3).read().tx_byte().bits();
+        let data_4 = register_block.data(4).read().tx_byte().bits();
 
         let raw_id: u32 = ((data_1 as u32) << 21)
             | ((data_2 as u32) << 13)
@@ -1387,7 +1388,7 @@ fn read_frame(register_block: &RegisterBlock) -> Result<EspTwaiFrame, EspTwaiErr
             | ((data_4 as u32) >> 3);
 
         let id = Id::from(ExtendedId::new(raw_id).unwrap());
-        (id, register_block.data_5().as_ptr())
+        (id, register_block.data(5).as_ptr())
     };
 
     let mut frame = if is_data_frame {
@@ -1422,8 +1423,8 @@ fn write_frame(register_block: &RegisterBlock, frame: &EspTwaiFrame) {
     let data_0: u8 = (frame_format << 7) | (rtr_bit << 6) | (self_reception << 4) | dlc_bits;
 
     register_block
-        .data_0()
-        .write(|w| unsafe { w.tx_byte_0().bits(data_0) });
+        .data(0)
+        .write(|w| unsafe { w.tx_byte().bits(data_0) });
 
     // Assemble the identifier information of the packet and return where the data
     // buffer starts.
@@ -1432,32 +1433,32 @@ fn write_frame(register_block: &RegisterBlock, frame: &EspTwaiFrame) {
             let id = id.as_raw();
 
             register_block
-                .data_1()
-                .write(|w| unsafe { w.tx_byte_1().bits((id >> 3) as u8) });
+                .data(1)
+                .write(|w| unsafe { w.tx_byte().bits((id >> 3) as u8) });
 
             register_block
-                .data_2()
-                .write(|w| unsafe { w.tx_byte_2().bits((id << 5) as u8) });
+                .data(2)
+                .write(|w| unsafe { w.tx_byte().bits((id << 5) as u8) });
 
-            register_block.data_3().as_ptr()
+            register_block.data(3).as_ptr()
         }
         Id::Extended(id) => {
             let id = id.as_raw();
 
             register_block
-                .data_1()
-                .write(|w| unsafe { w.tx_byte_1().bits((id >> 21) as u8) });
+                .data(1)
+                .write(|w| unsafe { w.tx_byte().bits((id >> 21) as u8) });
             register_block
-                .data_2()
-                .write(|w| unsafe { w.tx_byte_2().bits((id >> 13) as u8) });
+                .data(2)
+                .write(|w| unsafe { w.tx_byte().bits((id >> 13) as u8) });
             register_block
-                .data_3()
-                .write(|w| unsafe { w.tx_byte_3().bits((id >> 5) as u8) });
+                .data(3)
+                .write(|w| unsafe { w.tx_byte().bits((id >> 5) as u8) });
             register_block
-                .data_4()
-                .write(|w| unsafe { w.tx_byte_4().bits((id << 3) as u8) });
+                .data(4)
+                .write(|w| unsafe { w.tx_byte().bits((id << 3) as u8) });
 
-            register_block.data_5().as_ptr()
+            register_block.data(5).as_ptr()
         }
     };
 
@@ -1483,10 +1484,6 @@ fn write_frame(register_block: &RegisterBlock, frame: &EspTwaiFrame) {
 }
 
 impl PrivateInstance for crate::peripherals::TWAI0<'_> {
-    fn number(&self) -> usize {
-        0
-    }
-
     fn peripheral(&self) -> crate::system::Peripheral {
         crate::system::Peripheral::Twai0
     }
@@ -1516,7 +1513,13 @@ impl PrivateInstance for crate::peripherals::TWAI0<'_> {
     }
 
     fn async_handler(&self) -> InterruptHandler {
-        asynch::twai0
+        #[handler]
+        fn twai0() {
+            let twai = unsafe { crate::peripherals::TWAI0::steal() };
+            asynch::handle_interrupt(twai.register_block(), twai.async_state());
+        }
+
+        twai0
     }
 
     #[inline(always)]
@@ -1530,12 +1533,8 @@ impl PrivateInstance for crate::peripherals::TWAI0<'_> {
     }
 }
 
-#[cfg(twai1)]
+#[cfg(soc_has_twai1)]
 impl PrivateInstance for crate::peripherals::TWAI1<'_> {
-    fn number(&self) -> usize {
-        1
-    }
-
     fn peripheral(&self) -> crate::system::Peripheral {
         crate::system::Peripheral::Twai1
     }
@@ -1553,7 +1552,13 @@ impl PrivateInstance for crate::peripherals::TWAI1<'_> {
     }
 
     fn async_handler(&self) -> InterruptHandler {
-        asynch::twai1
+        #[handler]
+        fn twai1() {
+            let twai = unsafe { crate::peripherals::TWAI1::steal() };
+            asynch::handle_interrupt(twai.register_block(), twai.async_state());
+        }
+
+        twai1
     }
 
     #[inline(always)]
@@ -1570,9 +1575,9 @@ impl PrivateInstance for crate::peripherals::TWAI1<'_> {
 crate::any_peripheral! {
     /// Any TWAI peripheral.
     pub peripheral AnyTwai<'d> {
-        #[cfg(twai0)]
+        #[cfg(soc_has_twai0)]
         Twai0(crate::peripherals::TWAI0<'d>),
-        #[cfg(twai1)]
+        #[cfg(soc_has_twai1)]
         Twai1(crate::peripherals::TWAI1<'d>),
     }
 }
@@ -1580,12 +1585,11 @@ crate::any_peripheral! {
 impl PrivateInstance for AnyTwai<'_> {
     delegate::delegate! {
         to match &self.0 {
-            #[cfg(twai0)]
-            AnyTwaiInner::Twai0(twai) => twai,
-            #[cfg(twai1)]
-            AnyTwaiInner::Twai1(twai) => twai,
+            #[cfg(soc_has_twai0)]
+            any::Inner::Twai0(twai) => twai,
+            #[cfg(soc_has_twai1)]
+            any::Inner::Twai1(twai) => twai,
         } {
-            fn number(&self) -> usize;
             fn peripheral(&self) -> crate::system::Peripheral;
             fn input_signal(&self) -> InputSignal;
             fn output_signal(&self) -> OutputSignal;
@@ -1598,10 +1602,11 @@ impl PrivateInstance for AnyTwai<'_> {
 }
 
 /// A peripheral singleton compatible with the TWAI driver.
-pub trait Instance: PrivateInstance + IntoAnyTwai {}
+pub trait Instance: PrivateInstance + any::Degrade {}
 
+#[cfg(soc_has_twai0)]
 impl Instance for crate::peripherals::TWAI0<'_> {}
-#[cfg(twai1)]
+#[cfg(soc_has_twai1)]
 impl Instance for crate::peripherals::TWAI1<'_> {}
 impl Instance for AnyTwai<'_> {}
 
@@ -1613,12 +1618,8 @@ mod asynch {
         channel::Channel,
         waitqueue::AtomicWaker,
     };
-    use procmacros::handler;
 
     use super::*;
-    use crate::peripherals::TWAI0;
-    #[cfg(twai1)]
-    use crate::peripherals::TWAI1;
 
     pub struct TwaiAsyncState {
         pub tx_waker: AtomicWaker,
@@ -1760,26 +1761,23 @@ mod asynch {
         }
     }
 
-    fn handle_interrupt(register_block: &RegisterBlock, async_state: &TwaiAsyncState) {
+    pub(super) fn handle_interrupt(register_block: &RegisterBlock, async_state: &TwaiAsyncState) {
         cfg_if::cfg_if! {
             if #[cfg(any(esp32, esp32c3, esp32s2, esp32s3))] {
-                let intr_enable = register_block.int_ena().read();
                 let intr_status = register_block.int_raw().read();
 
                 let int_ena_reg = register_block.int_ena();
-
                 let tx_int_status = intr_status.tx_int_st();
                 let rx_int_status = intr_status.rx_int_st();
             } else {
-                let intr_enable = register_block.interrupt_enable().read();
                 let intr_status = register_block.interrupt().read();
 
                 let int_ena_reg = register_block.interrupt_enable();
-
                 let tx_int_status = intr_status.transmit_int_st();
                 let rx_int_status = intr_status.receive_int_st();
             }
         }
+        let intr_enable = int_ena_reg.read();
 
         if tx_int_status.bit_is_set() {
             async_state.tx_waker.wake();
@@ -1826,18 +1824,5 @@ mod asynch {
         unsafe {
             int_ena_reg.modify(|_, w| w.bits(intr_enable.bits() & (!intr_status.bits() | 1)));
         }
-    }
-
-    #[handler]
-    pub(super) fn twai0() {
-        let twai = unsafe { TWAI0::steal() };
-        handle_interrupt(twai.register_block(), twai.async_state());
-    }
-
-    #[cfg(twai1)]
-    #[handler]
-    pub(super) fn twai1() {
-        let twai = unsafe { TWAI1::steal() };
-        handle_interrupt(twai.register_block(), twai.async_state());
     }
 }

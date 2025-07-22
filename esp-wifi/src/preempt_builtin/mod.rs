@@ -7,13 +7,14 @@ use core::{ffi::c_void, mem::MaybeUninit};
 
 use allocator_api2::boxed::Box;
 use arch_specific::*;
+pub(crate) use timer::setup_timer;
 use timer::{disable_multitasking, setup_multitasking};
-pub(crate) use timer::{disable_timer, setup_timer};
 
 use crate::{
     compat::malloc::InternalMemory,
     hal::{sync::Locked, trapframe::TrapFrame},
     preempt::Scheduler,
+    preempt_builtin::timer::disable_timebase,
 };
 
 struct Context {
@@ -99,7 +100,7 @@ impl SchedulerState {
         save_task_context(unsafe { &mut *self.current_task }, trap_frame);
 
         if !self.to_delete.is_null() {
-            let task_to_delete = core::mem::replace(&mut self.to_delete, core::ptr::null_mut());
+            let task_to_delete = core::mem::take(&mut self.to_delete);
             self.delete_task(task_to_delete);
         }
 
@@ -128,10 +129,9 @@ impl Scheduler for BuiltinScheduler {
     }
 
     fn disable(&self) {
+        disable_timebase();
         disable_multitasking();
         delete_all_tasks();
-
-        timer::TIMER.with(|timer| timer.take());
     }
 
     fn yield_task(&self) {
@@ -209,7 +209,7 @@ fn delete_all_tasks() {
     let first_task = SCHEDULER_STATE.with(|state| {
         // Remove all tasks from the list. We will drop them outside of the critical
         // section.
-        core::mem::replace(&mut state.current_task, core::ptr::null_mut())
+        core::mem::take(&mut state.current_task)
     });
 
     if first_task.is_null() {

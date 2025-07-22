@@ -35,13 +35,14 @@ use esp_hal::{
     dma_buffers,
     main,
     spi::{
-        DataMode,
         Mode,
-        master::{Address, Command, Config, Spi},
+        master::{Address, Command, Config, DataMode, Spi},
     },
     time::Rate,
 };
 use esp_println::{print, println};
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[main]
 fn main() -> ! {

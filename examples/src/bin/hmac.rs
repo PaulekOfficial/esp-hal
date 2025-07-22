@@ -7,8 +7,8 @@
 //!
 //! ## ⚠️ Before writing ⚠️
 //! - From the factory, the eFuse keyblocks are programmed to be 32-byte 0x00.
-//! - This example is programmed to use this value so you can skip this step if
-//!   you don't want to burn an eFuse key.
+//! - This example is programmed to use this value so you can skip this step if you don't want to
+//!   burn an eFuse key.
 //! - If you skip the skip burning a custom key, you still need to [burn the
 //!   purpose](#burn-key-purpose).
 //! - [Read more about eFuses](https://docs.espressif.com/projects/esptool/en/latest/esp32c3/espefuse/index.html)
@@ -36,8 +36,7 @@
 //! ```
 //!
 //! You can then write your key using the following command
-//! - `BLOCK_KEY0` The keyblock to program the key to. By default this example
-//!   uses key0.
+//! - `BLOCK_KEY0` The keyblock to program the key to. By default this example uses key0.
 //! - `HMAC_UP` The purpose for the key. Use HMAC_UP for upstream.
 //! - `--no-read-protect` Allow to read the key from software, after writing it.
 //! ```sh
@@ -69,13 +68,15 @@ use hmac::{Hmac as HmacSw, Mac};
 use nb::block;
 use sha2::Sha256;
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 type HmacSha256 = HmacSw<Sha256>;
 
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
-    let mut rng = Rng::new(peripherals.RNG);
+    let rng = Rng::new();
 
     // Set sw key
     let key = [0_u8; 32].as_ref();

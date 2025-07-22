@@ -1,3 +1,9 @@
+#![cfg_attr(docsrs, procmacros::doc_replace(
+    "dac1_pin" => {
+        cfg(esp32) => "let dac1_pin = peripherals.GPIO25;",
+        cfg(esp32s2) => "let dac1_pin = peripherals.GPIO17;"
+    }
+))]
 //! # Digital to Analog Converter (DAC)
 //!
 //! ## Overview
@@ -16,12 +22,11 @@
 //! ## Examples
 //! ### Write a value to a DAC channel
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use esp_hal::analog::dac::Dac;
 //! # use esp_hal::delay::Delay;
 //! # use embedded_hal::delay::DelayNs;
-#![cfg_attr(esp32, doc = "let dac1_pin = peripherals.GPIO25;")]
-#![cfg_attr(esp32s2, doc = "let dac1_pin = peripherals.GPIO17;")]
+//! # {dac1_pin}
 //! let mut dac1 = Dac::new(peripherals.DAC1, dac1_pin);
 //!
 //! let mut delay = Delay::new();
@@ -121,12 +126,14 @@ pub trait Instance: crate::private::Sealed {
     }
 }
 
+#[cfg(dac_dac1)]
 impl<'d> Instance for crate::peripherals::DAC1<'d> {
     const INDEX: usize = 0;
 
     type Pin = Dac1Gpio<'d>;
 }
 
+#[cfg(dac_dac2)]
 impl<'d> Instance for crate::peripherals::DAC2<'d> {
     const INDEX: usize = 1;
 

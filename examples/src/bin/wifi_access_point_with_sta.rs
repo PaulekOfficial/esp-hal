@@ -2,12 +2,13 @@
 //!
 //! Set SSID and PASSWORD env variable before running this example.
 //!
-//! Gets an ip address via DHCP, creates an open access-point with SSID `esp-wifi`
-//! You can connect to it using a static IP in range 192.168.2.2 .. 192.168.2.255, gateway 192.168.2.1
-//! Open http://192.168.2.1:8080/ in your browser - the example will perform an HTTP get request to some "random" server
+//! Gets an ip address via DHCP, creates an open access-point with SSID
+//! `esp-wifi` You can connect to it using a static IP in range 192.168.2.2 ..
+//! 192.168.2.255, gateway 192.168.2.1 Open http://192.168.2.1:8080/ in your browser - the example will perform an HTTP get request to some "random" server
 //!
-//! On Android you might need to choose _Keep Accesspoint_ when it tells you the WiFi has no internet connection, Chrome might not want to load the URL - you can use a shell and try `curl` and `ping`
-//!
+//! On Android you might need to choose _Keep Accesspoint_ when it tells you the
+//! WiFi has no internet connection, Chrome might not want to load the URL - you
+//! can use a shell and try `curl` and `ping`
 
 //% FEATURES: esp-wifi esp-wifi/wifi esp-wifi/smoltcp esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c6
@@ -38,6 +39,8 @@ use smoltcp::{
     wire::IpAddress,
 };
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 
@@ -51,9 +54,7 @@ fn main() -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let mut rng = Rng::new(peripherals.RNG);
-
-    let esp_wifi_ctrl = init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap();
+    let esp_wifi_ctrl = init(timg0.timer0).unwrap();
 
     let (mut controller, interfaces) =
         esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
@@ -64,6 +65,7 @@ fn main() -> ! {
     let mut sta_device = interfaces.sta;
     let sta_interface = create_interface(&mut sta_device);
 
+    let rng = Rng::new();
     let now = || time::Instant::now().duration_since_epoch().as_millis();
     let mut ap_socket_set_entries: [SocketStorage; 3] = Default::default();
     let ap_socket_set = SocketSet::new(&mut ap_socket_set_entries[..]);

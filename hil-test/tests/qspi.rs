@@ -14,13 +14,14 @@ use esp_hal::{
     dma_buffers,
     gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pull},
     spi::{
-        DataMode,
         Mode,
-        master::{Address, Command, Config, Spi, SpiDma},
+        master::{Address, Command, Config, DataMode, Spi, SpiDma},
     },
     time::Rate,
 };
 use hil_test as _;
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 cfg_if::cfg_if! {
     if #[cfg(pdma)] {

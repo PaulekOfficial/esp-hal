@@ -1,6 +1,7 @@
 //! Embassy ESP-NOW Example (Duplex)
 //!
-//! Asynchronously broadcasts, receives and sends messages via esp-now in multiple embassy tasks
+//! Asynchronously broadcasts, receives and sends messages via esp-now in
+//! multiple embassy tasks
 //!
 //! Because of the huge task-arena size configured this won't work on ESP32-S2
 
@@ -15,13 +16,15 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Ticker};
 use esp_alloc as _;
 use esp_backtrace as _;
-use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup};
+use esp_hal::{clock::CpuClock, timer::timg::TimerGroup};
 use esp_println::println;
 use esp_wifi::{
     EspWifiController,
     esp_now::{BROADCAST_ADDRESS, EspNowManager, EspNowReceiver, EspNowSender, PeerInfo},
     init,
 };
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
@@ -43,15 +46,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let esp_wifi_ctrl = &*mk_static!(
-        EspWifiController<'static>,
-        init(
-            timg0.timer0,
-            Rng::new(peripherals.RNG),
-            peripherals.RADIO_CLK,
-        )
-        .unwrap()
-    );
+    let esp_wifi_ctrl = &*mk_static!(EspWifiController<'static>, init(timg0.timer0).unwrap());
 
     let wifi = peripherals.WIFI;
     let (mut controller, interfaces) = esp_wifi::wifi::new(&esp_wifi_ctrl, wifi).unwrap();

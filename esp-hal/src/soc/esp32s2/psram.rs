@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # PSRAM "virtual peripheral" driver (ESP32-S2)
 //!
 //! ## Overview
@@ -17,27 +18,13 @@
 //! You need an ESP32S2 with at least 2 MB of PSRAM memory.
 //! Notice that PSRAM example **must** be built in release mode!
 //!
-//! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! ```rust, ignore
+//! # {before_snippet}
 //! # extern crate alloc;
 //! # use alloc::{string::String, vec::Vec};
-//! # use esp_alloc as _;
-//! # use esp_hal::psram;
-//!
-//! // Initialize PSRAM and add it as a heap memory region
-//! fn init_psram_heap(start: *mut u8, size: usize) {
-//!     unsafe {
-//!         esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
-//!             start,
-//!             size,
-//!             esp_alloc::MemoryCapability::External.into(),
-//!         ));
-//!     }
-//! }
-//!
-//! // Initialize PSRAM and add it to the heap
-//! let (start, size) = psram::init_psram(peripherals.PSRAM,
-//!     psram::PsramConfig::default());
+//! #
+//! // Add PSRAM to the heap.
+//! esp_alloc::psram_allocator!(&peripherals.PSRAM, esp_hal::psram);
 //!
 //! init_psram_heap(start, size);
 //!
@@ -48,7 +35,7 @@
 //! }
 //!
 //! let string = String::from("A string allocated in PSRAM");
-//! # }
+//! # {after_snippet}
 //! ```
 
 use crate::peripherals::{EXTMEM, SPI0, SPI1};
@@ -215,6 +202,8 @@ pub(crate) mod utils {
         psram_gpio_config();
 
         if config.size.is_auto() {
+            psram_disable_qio_mode();
+
             // read chip id
             let mut dev_id = 0u32;
             psram_exec_cmd(
@@ -233,21 +222,25 @@ pub(crate) mod utils {
             );
             info!("chip id = {:x}", dev_id);
 
-            const PSRAM_ID_EID_S: u32 = 16;
-            const PSRAM_ID_EID_M: u32 = 0xff;
-            const PSRAM_EID_SIZE_M: u32 = 0x07;
-            const PSRAM_EID_SIZE_S: u32 = 5;
+            let size = if dev_id != 0xffffff {
+                const PSRAM_ID_EID_S: u32 = 16;
+                const PSRAM_ID_EID_M: u32 = 0xff;
+                const PSRAM_EID_SIZE_M: u32 = 0x07;
+                const PSRAM_EID_SIZE_S: u32 = 5;
 
-            let size_id = ((((dev_id) >> PSRAM_ID_EID_S) & PSRAM_ID_EID_M) >> PSRAM_EID_SIZE_S)
-                & PSRAM_EID_SIZE_M;
+                let size_id = (((dev_id >> PSRAM_ID_EID_S) & PSRAM_ID_EID_M) >> PSRAM_EID_SIZE_S)
+                    & PSRAM_EID_SIZE_M;
 
-            const PSRAM_EID_SIZE_32MBITS: u32 = 1;
-            const PSRAM_EID_SIZE_64MBITS: u32 = 2;
+                const PSRAM_EID_SIZE_32MBITS: u32 = 1;
+                const PSRAM_EID_SIZE_64MBITS: u32 = 2;
 
-            let size = match size_id {
-                PSRAM_EID_SIZE_64MBITS => 16 / 8 * 1024 * 1024,
-                PSRAM_EID_SIZE_32MBITS => 16 / 8 * 1024 * 1024,
-                _ => 16 / 8 * 1024 * 1024,
+                match size_id {
+                    PSRAM_EID_SIZE_64MBITS => 8 * 1024 * 1024,
+                    PSRAM_EID_SIZE_32MBITS => 4 * 1024 * 1024,
+                    _ => 2 * 1024 * 1024,
+                }
+            } else {
+                0
             };
 
             info!("size is {}", size);
@@ -315,6 +308,27 @@ pub(crate) mod utils {
         );
     }
 
+    /// Exit QPI mode
+    fn psram_disable_qio_mode() {
+        const PSRAM_EXIT_QMODE: u16 = 0xF5;
+        const CS_PSRAM_SEL: u8 = 1 << 1;
+
+        psram_exec_cmd(
+            CommandMode::PsramCmdQpi,
+            PSRAM_EXIT_QMODE,
+            8, // command and command bit len
+            0,
+            0, // address and address bit len
+            0, // dummy bit len
+            core::ptr::null(),
+            0, // tx data and tx bit len
+            core::ptr::null_mut(),
+            0,            // rx data and rx bit len
+            CS_PSRAM_SEL, // cs bit mask
+            false,        // whether is program/erase operation
+        );
+    }
+
     #[derive(PartialEq)]
     #[allow(unused)]
     enum CommandMode {
@@ -322,7 +336,7 @@ pub(crate) mod utils {
         PsramCmdSpi = 1,
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[inline(always)]
     fn psram_exec_cmd(
         mode: CommandMode,
@@ -388,7 +402,7 @@ pub(crate) mod utils {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[inline(always)]
     fn _psram_exec_cmd(
         cmd: u16,
@@ -483,14 +497,13 @@ pub(crate) mod utils {
             ///
             /// [`wp_gpio_num`]: u8 Number of the WP pin to reconfigure for quad I/O
             /// [`spiconfig`]: u32 Pin configuration, as returned from ets_efuse_get_spiconfig().
-            /// - If this parameter is 0, default SPI pins are used and
-            ///   wp_gpio_num parameter is ignored.
-            /// - If this parameter is 1, default HSPI pins are used and
-            ///   wp_gpio_num parameter is ignored.
-            /// - For other values, this parameter encodes the HD pin number and
-            ///   also the CLK pin number. CLK pin selection is used to
-            ///   determine if HSPI or SPI peripheral will be used (use HSPI if
-            ///   CLK pin is the HSPI clock pin, otherwise use SPI).
+            /// - If this parameter is 0, default SPI pins are used and wp_gpio_num parameter is
+            ///   ignored.
+            /// - If this parameter is 1, default HSPI pins are used and wp_gpio_num parameter is
+            ///   ignored.
+            /// - For other values, this parameter encodes the HD pin number and also the CLK pin
+            ///   number. CLK pin selection is used to determine if HSPI or SPI peripheral will be
+            ///   used (use HSPI if CLK pin is the HSPI clock pin, otherwise use SPI).
             //   Both HD & WP pins are configured via GPIO matrix to map to the selected peripheral.
             fn esp_rom_spiflash_select_qio_pins(wp_gpio_num: u8, spiconfig: u32);
         }

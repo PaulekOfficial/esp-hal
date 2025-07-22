@@ -10,12 +10,16 @@ mod generate;
 #[cfg(feature = "build")]
 pub use generate::{
     ConfigOption,
+    DisplayHint,
     Error,
     Stability,
     generate_config,
+    generate_config_from_yaml_definition,
     validator::Validator,
     value::Value,
 };
+#[cfg(feature = "tui")]
+pub use generate::{do_checks, evaluate_yaml_config};
 
 /// Parse the value of an environment variable as a [bool] at compile time.
 #[macro_export]

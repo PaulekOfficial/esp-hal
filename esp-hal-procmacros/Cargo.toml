@@ -1,8 +1,8 @@
 [package]
 name          = "esp-hal-procmacros"
-version       = "0.17.0"
+version       = "0.19.0"
 edition       = "2024"
-rust-version  = "1.85.0"
+rust-version  = "1.88.0"
 description   = "Procedural macros for esp-hal"
 documentation = "https://docs.espressif.com/projects/rust/esp-hal-procmacros/latest/"
 repository    = "https://github.com/esp-rs/esp-hal"
@@ -15,15 +15,14 @@ features = ["embassy", "has-ulp-core", "interrupt", "ram", "is-ulp-core"]
 proc-macro = true
 
 [dependencies]
-darling           = "0.20.11"
 document-features = "0.2.11"
 litrs             = "0.4.1"
 object            = { version = "0.36.7", default-features = false, features = ["read_core", "elf"], optional = true }
 proc-macro-crate  = "3.3.0"
-proc-macro-error2 = "2.0.1"
 proc-macro2       = "1.0.95"
 quote             = "1.0.40"
 syn               = { version = "2.0.100", features = ["extra-traits", "full"] }
+termcolor         = "1.4.1"
 
 [features]
 ## Provide a `#[main]` procmacro to mark the entry point for Embassy applications.

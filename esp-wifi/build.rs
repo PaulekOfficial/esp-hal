@@ -1,87 +1,72 @@
-use std::{error::Error, str::FromStr};
+use std::error::Error;
 
-use esp_build::assert_unique_used_features;
-use esp_config::{ConfigOption, Stability, Validator, Value, generate_config};
-use esp_metadata::{Chip, Config};
+use esp_config::generate_config_from_yaml_definition;
+use esp_metadata_generated::Chip;
+
+#[macro_export]
+macro_rules! assert_unique_features {
+    ($($feature:literal),+ $(,)?) => {
+        assert!(
+            (0 $(+ cfg!(feature = $feature) as usize)+ ) <= 1,
+            "Exactly zero or one of the following features must be enabled: {}",
+            [$($feature),+].join(", ")
+        );
+    };
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Ensure that only a single chip is specified:
-    assert_unique_used_features!(
-        "esp32", "esp32c2", "esp32c3", "esp32c6", "esp32h2", "esp32s2", "esp32s3"
-    );
-
-    // NOTE: update when adding new device support!
-    // Determine the name of the configured device:
-    let device_name = if cfg!(feature = "esp32") {
-        "esp32"
-    } else if cfg!(feature = "esp32c2") {
-        "esp32c2"
-    } else if cfg!(feature = "esp32c3") {
-        "esp32c3"
-    } else if cfg!(feature = "esp32c6") {
-        "esp32c6"
-    } else if cfg!(feature = "esp32h2") {
-        "esp32h2"
-    } else if cfg!(feature = "esp32s2") {
-        "esp32s2"
-    } else if cfg!(feature = "esp32s3") {
-        "esp32s3"
-    } else {
-        unreachable!() // We've confirmed exactly one known device was selected
-    };
-
     // Load the configuration file for the configured device:
-    let chip = Chip::from_str(device_name)?;
-    let config = Config::for_chip(&chip);
+    let chip = Chip::from_cargo_feature()?;
 
     // Define all necessary configuration symbols for the configured device:
-    config.define_symbols();
+    chip.define_cfgs();
 
-    #[cfg(all(feature = "ble", feature = "esp32s2"))]
-    {
-        panic!(
-            r#"
+    // Log and defmt are mutually exclusive features. The main technical reason is
+    // that allowing both would make the exact panicking behaviour a fragile
+    // implementation detail.
+    assert_unique_features!("log-04", "defmt");
+
+    assert!(
+        !cfg!(feature = "ble") || chip.contains("bt"),
+        r#"
 
         BLE is not supported on this target.
 
         "#
-        );
-    }
-    #[cfg(all(feature = "wifi", feature = "esp32h2"))]
-    {
-        panic!(
-            r#"
+    );
+    assert!(
+        !cfg!(feature = "wifi") || chip.contains("wifi"),
+        r#"
 
         WiFi is not supported on this target.
 
         "#
-        );
-    }
-    #[cfg(all(feature = "coex", any(feature = "esp32s2", feature = "esp32h2")))]
+    );
+
+    if let Ok(level) = std::env::var("OPT_LEVEL")
+        && level != "2"
+        && level != "3"
+        && level != "s"
     {
-        panic!(
-            r#"
-
-        COEX is not supported on this target.
-
-        See https://github.com/esp-rs/esp-wifi/issues/92.
-
-        "#
-        );
-    }
-    if let Ok(level) = std::env::var("OPT_LEVEL") {
-        if level != "2" && level != "3" {
-            let message = format!(
-                "esp-wifi should be built with optimization level 2 or 3 - yours is {level}.
+        let message = format!(
+            "esp-wifi should be built with optimization level 2, 3 or s - yours is {level}.
                 See https://github.com/esp-rs/esp-wifi",
-            );
-            print_warning(message);
-        }
+        );
+        print_warning(message);
     }
 
     println!("cargo:rustc-check-cfg=cfg(coex)");
     #[cfg(feature = "coex")]
     {
+        assert!(
+            chip.contains("wifi") && chip.contains("bt"),
+            r#"
+
+            WiFi/Bluetooth coexistence is not supported on this target.
+
+            "#
+        );
+
         #[cfg(all(feature = "wifi", feature = "ble"))]
         println!("cargo:rustc-cfg=coex");
 
@@ -96,204 +81,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     //
     // keep the defaults aligned with `esp_wifi_sys::include::*` e.g.
     // `esp_wifi_sys::include::CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM`
-    generate_config(
-        "esp_wifi",
-        &[
-            ConfigOption {
-                name: "rx_queue_size",
-                description: "Size of the RX queue in frames",
-                default_value: Value::Integer(5),
-                constraint: Some(Validator::PositiveInteger),
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "tx_queue_size",
-                description: "Size of the TX queue in frames",
-                default_value: Value::Integer(3),
-                constraint: Some(Validator::PositiveInteger),
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "static_rx_buf_num",
-                description: "WiFi static RX buffer number. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html#_CPPv418wifi_init_config_t)",
-                default_value: Value::Integer(10),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "dynamic_rx_buf_num",
-                description: "WiFi dynamic RX buffer number. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html#_CPPv418wifi_init_config_t)",
-                default_value: Value::Integer(32),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "static_tx_buf_num",
-                description: "WiFi static TX buffer number. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html#_CPPv418wifi_init_config_t)",
-                default_value: Value::Integer(0),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "dynamic_tx_buf_num",
-                description: "WiFi dynamic TX buffer number. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html#_CPPv418wifi_init_config_t)",
-                default_value: Value::Integer(32),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "ampdu_rx_enable",
-                description: "WiFi AMPDU RX feature enable flag. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html#_CPPv418wifi_init_config_t)",
-                default_value: Value::Bool(true),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "ampdu_tx_enable",
-                description: "WiFi AMPDU TX feature enable flag. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html#_CPPv418wifi_init_config_t)",
-                default_value: Value::Bool(true),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "amsdu_tx_enable",
-                description: "WiFi AMSDU TX feature enable flag. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html#_CPPv418wifi_init_config_t)",
-                default_value: Value::Bool(false),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "rx_ba_win",
-                description: "WiFi Block Ack RX window size. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html#_CPPv418wifi_init_config_t)",
-                default_value: Value::Integer(6),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "max_burst_size",
-                description: "See [smoltcp's documentation](https://docs.rs/smoltcp/0.10.0/smoltcp/phy/struct.DeviceCapabilities.html#structfield.max_burst_size)",
-                default_value: Value::Integer(1),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "country_code",
-                description: "Country code. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/wifi.html#wi-fi-country-code)",
-                default_value: Value::String("CN".to_owned()),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "country_code_operating_class",
-                description: "If not 0: Operating Class table number. See [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/wifi.html#wi-fi-country-code)",
-                default_value: Value::Integer(0),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "mtu",
-                description: "MTU, see [smoltcp's documentation](https://docs.rs/smoltcp/0.10.0/smoltcp/phy/struct.DeviceCapabilities.html#structfield.max_transmission_unit)",
-                default_value: Value::Integer(1492),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "tick_rate_hz",
-                description: "Tick rate of the internal task scheduler in hertz",
-                default_value: Value::Integer(100),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "listen_interval",
-                description: "Interval for station to listen to beacon from AP. The unit of listen interval is one beacon interval. For example, if beacon interval is 100 ms and listen interval is 3, the interval for station to listen to beacon is 300 ms",
-                default_value: Value::Integer(3),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "beacon_timeout",
-                description: "For Station, If the station does not receive a beacon frame from the connected SoftAP during the  inactive time, disconnect from SoftAP. Default 6s. Range 6-30",
-                default_value: Value::Integer(6),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "ap_beacon_timeout",
-                description: "For SoftAP, If the SoftAP doesn't receive any data from the connected STA during inactive time, the SoftAP will force deauth the STA. Default is 300s",
-                default_value: Value::Integer(300),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "failure_retry_cnt",
-                description: "Number of connection retries station will do before moving to next AP. scan_method should be set as WIFI_ALL_CHANNEL_SCAN to use this config. Note: Enabling this may cause connection time to increase incase best AP doesn't behave properly. Defaults to 1",
-                default_value: Value::Integer(1),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "scan_method",
-                description: "0 = WIFI_FAST_SCAN, 1 = WIFI_ALL_CHANNEL_SCAN, defaults to 0",
-                default_value: Value::Integer(0),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "dump_packets",
-                description: "Dump packets via an info log statement",
-                default_value: Value::Bool(false),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-            ConfigOption {
-                name: "phy_enable_usb",
-                description: "Keeps USB running when using WiFi. This allows debugging and log messages via USB Serial JTAG. Turn off for best WiFi performance.",
-                default_value: Value::Bool(true),
-                constraint: None,
-                stability: Stability::Unstable,
-                active: true,
-            },
-        ],
-        true,
-        true,
-    );
+    println!("cargo:rerun-if-changed=./esp_config.yml");
+    let cfg_yaml = std::fs::read_to_string("./esp_config.yml")
+        .expect("Failed to read esp_config.yml for esp-wifi");
+    generate_config_from_yaml_definition(&cfg_yaml, true, true, Some(chip)).unwrap();
 
     Ok(())
-}
-
-#[cfg(not(any(
-    feature = "esp32",
-    feature = "esp32c2",
-    feature = "esp32c3",
-    feature = "esp32c6",
-    feature = "esp32h2",
-    feature = "esp32s2",
-    feature = "esp32s3",
-)))]
-fn main() {
-    panic!("Select a chip via it's cargo feature");
 }
 
 fn print_warning(message: impl core::fmt::Display) {

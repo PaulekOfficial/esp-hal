@@ -82,15 +82,13 @@
 //! Peripheral signals and GPIOs can be connected with the following
 //! constraints:
 //!
-//! - A peripheral input signal must be driven by exactly one signal, which can
-//!   be a GPIO input or a constant level.
-//! - A peripheral output signal can be connected to any number of GPIOs. These
-//!   GPIOs can be configured differently. The peripheral drivers will only
-//!   support a single connection (that is, they disconnect previously
-//!   configured signals on repeat calls to the same function), but you can use
-//!   `esp_hal::gpio::OutputSignal::connect_to` (note that the type is currently
-//!   hidden from the documentation) to connect multiple GPIOs to the same
-//!   output signal.
+//! - A peripheral input signal must be driven by exactly one signal, which can be a GPIO input or a
+//!   constant level.
+//! - A peripheral output signal can be connected to any number of GPIOs. These GPIOs can be
+//!   configured differently. The peripheral drivers will only support a single connection (that is,
+//!   they disconnect previously configured signals on repeat calls to the same function), but you
+//!   can use `esp_hal::gpio::OutputSignal::connect_to` (note that the type is currently hidden from
+//!   the documentation) to connect multiple GPIOs to the same output signal.
 //! - A GPIO input signal can be connected to any number of peripheral inputs.
 //! - A GPIO output can be driven by only one peripheral output.
 //!
@@ -104,17 +102,11 @@ use crate::{
         self,
         AlternateFunction,
         AnyPin,
-        FUNC_IN_SEL_OFFSET,
         Flex,
-        GPIO_FUNCTION,
-        INPUT_SIGNAL_MAX,
         InputPin,
-        InputSignalType,
         Level,
         NoPin,
-        OUTPUT_SIGNAL_MAX,
         OutputPin,
-        OutputSignalType,
         Pin,
         PinGuard,
     },
@@ -321,7 +313,7 @@ impl<'d> PeripheralOutput<'d> for OutputSignal<'d> {
 
 impl gpio::InputSignal {
     fn can_use_gpio_matrix(self) -> bool {
-        self as InputSignalType <= INPUT_SIGNAL_MAX
+        self as usize <= property!("gpio.input_signal_max")
     }
 
     /// Connects a peripheral input signal to a GPIO or a constant level.
@@ -344,7 +336,7 @@ impl gpio::InputSignal {
 
 impl gpio::OutputSignal {
     fn can_use_gpio_matrix(self) -> bool {
-        self as OutputSignalType <= OUTPUT_SIGNAL_MAX
+        self as usize <= property!("gpio.output_signal_max")
     }
 
     /// Connects a peripheral output signal to a GPIO.
@@ -417,24 +409,25 @@ impl Signal<'_> {
         let use_gpio_matrix = match self {
             Signal::Pin(pin) => {
                 let af = if is_inverted || force_gpio {
-                    GPIO_FUNCTION
+                    AlternateFunction::GPIO
                 } else {
                     pin.input_signals(private::Internal)
                         .iter()
                         .find(|(_af, s)| *s == signal)
                         .map(|(af, _)| *af)
-                        .unwrap_or(GPIO_FUNCTION)
+                        .unwrap_or(AlternateFunction::GPIO)
                 };
+                pin.disable_usb_pads();
                 pin.set_alternate_function(af);
-                af == GPIO_FUNCTION
+                af == AlternateFunction::GPIO
             }
             Signal::Level(_) => true,
         };
 
         let input = match self {
             Signal::Pin(pin) => pin.number(),
-            Signal::Level(Level::Low) => gpio::ZERO_INPUT,
-            Signal::Level(Level::High) => gpio::ONE_INPUT,
+            Signal::Level(Level::Low) => property!("gpio.constant_0_input"),
+            Signal::Level(Level::High) => property!("gpio.constant_1_input"),
         };
 
         assert!(
@@ -443,8 +436,9 @@ impl Signal<'_> {
             signal
         );
         // No need for a critical section, this is a write and not a modify operation.
+        let offset = property!("gpio.func_in_sel_offset");
         GPIO::regs()
-            .func_in_sel_cfg(signal as usize - FUNC_IN_SEL_OFFSET)
+            .func_in_sel_cfg(signal as usize - offset)
             .write(|w| unsafe {
                 w.sel().bit(use_gpio_matrix);
                 w.in_inv_sel().bit(is_inverted);
@@ -465,20 +459,21 @@ impl Signal<'_> {
             return;
         };
         let af = if is_inverted || force_gpio {
-            GPIO_FUNCTION
+            AlternateFunction::GPIO
         } else {
             pin.output_signals(private::Internal)
                 .iter()
                 .find(|(_af, s)| *s == signal)
                 .map(|(af, _)| *af)
-                .unwrap_or(GPIO_FUNCTION)
+                .unwrap_or(AlternateFunction::GPIO)
         };
+        pin.disable_usb_pads();
         pin.set_alternate_function(af);
 
-        let use_gpio_matrix = af == GPIO_FUNCTION;
+        let use_gpio_matrix = af == AlternateFunction::GPIO;
 
         assert!(
-            signal.can_use_gpio_matrix() || use_gpio_matrix,
+            signal.can_use_gpio_matrix() || !use_gpio_matrix,
             "{:?} cannot be routed through the GPIO matrix",
             signal
         );
@@ -919,6 +914,7 @@ impl NoOp {
     }
 }
 
+#[procmacros::doc_replace]
 /// ```rust,compile_fail
 /// // Regression test for <https://github.com/esp-rs/esp-hal/issues/3313>
 /// // This test case is expected to generate the following error:
@@ -933,7 +929,7 @@ impl NoOp {
 /// //    | |_______________________^ the trait `InputPin` is not implemented for `Output<'_>`
 /// // FIXME: due to <https://github.com/rust-lang/rust/issues/139924> this test may be ineffective.
 /// //        It can be manually verified by changing it to `no_run` for a `run-doc-tests` run.
-#[doc = crate::before_snippet!()]
+/// # {before_snippet}
 /// use esp_hal::gpio::{Output, Level, interconnect::PeripheralInput};
 ///
 /// fn function_expects_input<'d>(_: impl PeripheralInput<'d>) {}
@@ -944,7 +940,6 @@ impl NoOp {
 ///     Default::default()),
 /// );
 ///
-/// # Ok(())
-/// # }
+/// # {after_snippet}
 /// ```
 fn _compile_tests() {}

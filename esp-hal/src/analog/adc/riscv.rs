@@ -8,6 +8,16 @@ cfg_if::cfg_if! {
     }
 }
 
+use core::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+// We only have to count on devices that have multiple ADCs sharing the same interrupt
+#[cfg(all(adc_adc1, adc_adc2))]
+use portable_atomic::{AtomicU32, Ordering};
+use procmacros::handler;
+
 pub use self::calibration::*;
 use super::{AdcCalSource, AdcConfig, Attenuation};
 #[cfg(any(esp32c2, esp32c3, esp32c6, esp32h2))]
@@ -15,7 +25,7 @@ use crate::efuse::Efuse;
 use crate::{
     Async,
     Blocking,
-    analog::adc::asynch::AdcFuture,
+    asynch::AtomicWaker,
     interrupt::{InterruptConfigurable, InterruptHandler},
     peripherals::{APB_SARADC, Interrupt},
     soc::regi2c,
@@ -31,7 +41,7 @@ mod calibration;
 // https://github.com/espressif/esp-idf/blob/903af13e8/components/soc/esp32h2/include/soc/regi2c_saradc.h
 // https://github.com/espressif/esp-idf/blob/903af13e8/components/soc/esp32h4/include/soc/regi2c_saradc.h
 cfg_if::cfg_if! {
-    if #[cfg(adc1)] {
+    if #[cfg(adc_adc1)] {
         const ADC_VAL_MASK: u16 = 0xfff;
         const ADC_CAL_CNT_MAX: u16 = 32;
         const ADC_CAL_CHANNEL: u16 = 15;
@@ -127,7 +137,7 @@ pub trait RegisterAccess {
     fn set_init_code(data: u16);
 }
 
-#[cfg(adc1)]
+#[cfg(adc_adc1)]
 impl RegisterAccess for crate::peripherals::ADC1<'_> {
     fn config_onetime_sample(channel: u8, attenuation: u8) {
         APB_SARADC::regs().onetime_sample().modify(|_, w| unsafe {
@@ -176,7 +186,7 @@ impl RegisterAccess for crate::peripherals::ADC1<'_> {
     }
 }
 
-#[cfg(adc1)]
+#[cfg(adc_adc1)]
 impl super::CalibrationAccess for crate::peripherals::ADC1<'_> {
     const ADC_CAL_CNT_MAX: u16 = ADC_CAL_CNT_MAX;
     const ADC_CAL_CHANNEL: u16 = ADC_CAL_CHANNEL;
@@ -201,7 +211,7 @@ impl super::CalibrationAccess for crate::peripherals::ADC1<'_> {
     }
 }
 
-#[cfg(adc2)]
+#[cfg(adc_adc2)]
 impl RegisterAccess for crate::peripherals::ADC2<'_> {
     fn config_onetime_sample(channel: u8, attenuation: u8) {
         APB_SARADC::regs().onetime_sample().modify(|_, w| unsafe {
@@ -248,7 +258,7 @@ impl RegisterAccess for crate::peripherals::ADC2<'_> {
     }
 }
 
-#[cfg(adc2)]
+#[cfg(adc_adc2)]
 impl super::CalibrationAccess for crate::peripherals::ADC2<'_> {
     const ADC_CAL_CNT_MAX: u16 = ADC_CAL_CNT_MAX;
     const ADC_CAL_CHANNEL: u16 = ADC_CAL_CHANNEL;
@@ -302,8 +312,8 @@ where
 
     /// Reconfigures the ADC driver to operate in asynchronous mode.
     pub fn into_async(mut self) -> Adc<'d, ADCI, Async> {
-        asynch::acquire_async_adc();
-        self.set_interrupt_handler(asynch::adc_interrupt_handler);
+        acquire_async_adc();
+        self.set_interrupt_handler(adc_interrupt_handler);
 
         // Reset interrupt flags and disable oneshot reading to normalize state before
         // entering async mode, otherwise there can be '0' readings, happening initially
@@ -409,7 +419,7 @@ impl<ADCI> InterruptConfigurable for Adc<'_, ADCI, Blocking> {
     }
 }
 
-#[cfg(adc1)]
+#[cfg(adc_adc1)]
 impl super::AdcCalEfuse for crate::peripherals::ADC1<'_> {
     fn init_code(atten: Attenuation) -> Option<u16> {
         Efuse::rtc_calib_init_code(1, atten)
@@ -424,7 +434,7 @@ impl super::AdcCalEfuse for crate::peripherals::ADC1<'_> {
     }
 }
 
-#[cfg(adc2)]
+#[cfg(adc_adc2)]
 impl super::AdcCalEfuse for crate::peripherals::ADC2<'_> {
     fn init_code(atten: Attenuation) -> Option<u16> {
         Efuse::rtc_calib_init_code(2, atten)
@@ -505,7 +515,7 @@ where
 {
     /// Create a new instance in [crate::Blocking] mode.
     pub fn into_blocking(self) -> Adc<'d, ADCI, Blocking> {
-        if asynch::release_async_adc() {
+        if release_async_adc() {
             // Disable ADC interrupt on all cores if the last async ADC instance is disabled
             for cpu in crate::system::Cpu::all() {
                 crate::interrupt::disable(cpu, InterruptSource);
@@ -527,7 +537,7 @@ where
     /// underlies the pin.
     pub async fn read_oneshot<PIN, CS>(&mut self, pin: &mut super::AdcPin<PIN, ADCI, CS>) -> u16
     where
-        ADCI: asynch::AsyncAccess,
+        ADCI: Instance,
         PIN: super::AdcChannel,
         CS: super::AdcCalScheme<ADCI>,
     {
@@ -565,160 +575,144 @@ where
     }
 }
 
-/// Async functionality
-pub(crate) mod asynch {
-    use core::{
-        marker::PhantomData,
-        pin::Pin,
-        task::{Context, Poll},
-    };
+#[cfg(all(adc_adc1, adc_adc2))]
+static ASYNC_ADC_COUNT: AtomicU32 = AtomicU32::new(0);
 
-    // We only have to count on devices that have multiple ADCs sharing the same interrupt
-    #[cfg(all(adc1, adc2))]
-    use portable_atomic::{AtomicU32, Ordering};
-    use procmacros::handler;
+pub(super) fn acquire_async_adc() {
+    #[cfg(all(adc_adc1, adc_adc2))]
+    ASYNC_ADC_COUNT.fetch_add(1, Ordering::Relaxed);
+}
 
-    use crate::{Async, asynch::AtomicWaker, peripherals::APB_SARADC};
-
-    #[cfg(all(adc1, adc2))]
-    static ASYNC_ADC_COUNT: AtomicU32 = AtomicU32::new(0);
-
-    pub(super) fn acquire_async_adc() {
-        #[cfg(all(adc1, adc2))]
-        ASYNC_ADC_COUNT.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn release_async_adc() -> bool {
-        cfg_if::cfg_if! {
-            if #[cfg(all(adc1, adc2))] {
-                ASYNC_ADC_COUNT.fetch_sub(1, Ordering::Relaxed) == 1
-            } else {
-                true
-            }
+pub(super) fn release_async_adc() -> bool {
+    cfg_if::cfg_if! {
+        if #[cfg(all(adc_adc1, adc_adc2))] {
+            ASYNC_ADC_COUNT.fetch_sub(1, Ordering::Relaxed) == 1
+        } else {
+            true
         }
     }
+}
 
-    #[handler]
-    pub(crate) fn adc_interrupt_handler() {
-        let saradc = APB_SARADC::regs();
-        let interrupt_status = saradc.int_st().read();
+#[handler]
+pub(crate) fn adc_interrupt_handler() {
+    let saradc = APB_SARADC::regs();
+    let interrupt_status = saradc.int_st().read();
 
-        #[cfg(adc1)]
-        if interrupt_status.adc1_done().bit_is_set() {
-            unsafe { handle_async(crate::peripherals::ADC1::steal()) }
-        }
-
-        #[cfg(adc2)]
-        if interrupt_status.adc2_done().bit_is_set() {
-            unsafe { handle_async(crate::peripherals::ADC2::steal()) }
-        }
+    #[cfg(adc_adc1)]
+    if interrupt_status.adc1_done().bit_is_set() {
+        unsafe { handle_async(crate::peripherals::ADC1::steal()) }
     }
 
-    fn handle_async<ADCI: AsyncAccess>(_instance: ADCI) {
-        ADCI::waker().wake();
+    #[cfg(adc_adc2)]
+    if interrupt_status.adc2_done().bit_is_set() {
+        unsafe { handle_async(crate::peripherals::ADC2::steal()) }
+    }
+}
+
+fn handle_async<ADCI: Instance>(_instance: ADCI) {
+    ADCI::waker().wake();
+    ADCI::disable_interrupt();
+}
+
+/// Enable asynchronous access.
+pub trait Instance: crate::private::Sealed {
+    /// Enable the ADC interrupt
+    fn enable_interrupt();
+
+    /// Disable the ADC interrupt
+    fn disable_interrupt();
+
+    /// Clear the ADC interrupt
+    fn clear_interrupt();
+
+    /// Obtain the waker for the ADC interrupt
+    fn waker() -> &'static AtomicWaker;
+}
+
+#[cfg(adc_adc1)]
+impl Instance for crate::peripherals::ADC1<'_> {
+    fn enable_interrupt() {
+        APB_SARADC::regs()
+            .int_ena()
+            .modify(|_, w| w.adc1_done().set_bit());
+    }
+
+    fn disable_interrupt() {
+        APB_SARADC::regs()
+            .int_ena()
+            .modify(|_, w| w.adc1_done().clear_bit());
+    }
+
+    fn clear_interrupt() {
+        APB_SARADC::regs()
+            .int_clr()
+            .write(|w| w.adc1_done().clear_bit_by_one());
+    }
+
+    fn waker() -> &'static AtomicWaker {
+        static WAKER: AtomicWaker = AtomicWaker::new();
+
+        &WAKER
+    }
+}
+
+#[cfg(adc_adc2)]
+impl Instance for crate::peripherals::ADC2<'_> {
+    fn enable_interrupt() {
+        APB_SARADC::regs()
+            .int_ena()
+            .modify(|_, w| w.adc2_done().set_bit());
+    }
+
+    fn disable_interrupt() {
+        APB_SARADC::regs()
+            .int_ena()
+            .modify(|_, w| w.adc2_done().clear_bit());
+    }
+
+    fn clear_interrupt() {
+        APB_SARADC::regs()
+            .int_clr()
+            .write(|w| w.adc2_done().clear_bit_by_one());
+    }
+
+    fn waker() -> &'static AtomicWaker {
+        static WAKER: AtomicWaker = AtomicWaker::new();
+
+        &WAKER
+    }
+}
+
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub(crate) struct AdcFuture<ADCI: Instance> {
+    phantom: PhantomData<ADCI>,
+}
+
+impl<ADCI: Instance> AdcFuture<ADCI> {
+    pub fn new(_self: &super::Adc<'_, ADCI, Async>) -> Self {
+        Self {
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<ADCI: Instance + super::RegisterAccess> core::future::Future for AdcFuture<ADCI> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if ADCI::is_done() {
+            ADCI::clear_interrupt();
+            Poll::Ready(())
+        } else {
+            ADCI::waker().register(cx.waker());
+            ADCI::enable_interrupt();
+            Poll::Pending
+        }
+    }
+}
+
+impl<ADCI: Instance> Drop for AdcFuture<ADCI> {
+    fn drop(&mut self) {
         ADCI::disable_interrupt();
-    }
-
-    #[doc(hidden)]
-    pub trait AsyncAccess {
-        /// Enable the ADC interrupt
-        fn enable_interrupt();
-
-        /// Disable the ADC interrupt
-        fn disable_interrupt();
-
-        /// Clear the ADC interrupt
-        fn clear_interrupt();
-
-        /// Obtain the waker for the ADC interrupt
-        fn waker() -> &'static AtomicWaker;
-    }
-
-    #[cfg(adc1)]
-    impl AsyncAccess for crate::peripherals::ADC1<'_> {
-        fn enable_interrupt() {
-            APB_SARADC::regs()
-                .int_ena()
-                .modify(|_, w| w.adc1_done().set_bit());
-        }
-
-        fn disable_interrupt() {
-            APB_SARADC::regs()
-                .int_ena()
-                .modify(|_, w| w.adc1_done().clear_bit());
-        }
-
-        fn clear_interrupt() {
-            APB_SARADC::regs()
-                .int_clr()
-                .write(|w| w.adc1_done().clear_bit_by_one());
-        }
-
-        fn waker() -> &'static AtomicWaker {
-            static WAKER: AtomicWaker = AtomicWaker::new();
-
-            &WAKER
-        }
-    }
-
-    #[cfg(adc2)]
-    impl AsyncAccess for crate::peripherals::ADC2<'_> {
-        fn enable_interrupt() {
-            APB_SARADC::regs()
-                .int_ena()
-                .modify(|_, w| w.adc2_done().set_bit());
-        }
-
-        fn disable_interrupt() {
-            APB_SARADC::regs()
-                .int_ena()
-                .modify(|_, w| w.adc2_done().clear_bit());
-        }
-
-        fn clear_interrupt() {
-            APB_SARADC::regs()
-                .int_clr()
-                .write(|w| w.adc2_done().clear_bit_by_one());
-        }
-
-        fn waker() -> &'static AtomicWaker {
-            static WAKER: AtomicWaker = AtomicWaker::new();
-
-            &WAKER
-        }
-    }
-
-    #[must_use = "futures do nothing unless you `.await` or poll them"]
-    pub(crate) struct AdcFuture<ADCI: AsyncAccess> {
-        phantom: PhantomData<ADCI>,
-    }
-
-    impl<ADCI: AsyncAccess> AdcFuture<ADCI> {
-        pub fn new(_self: &super::Adc<'_, ADCI, Async>) -> Self {
-            Self {
-                phantom: PhantomData,
-            }
-        }
-    }
-
-    impl<ADCI: AsyncAccess + super::RegisterAccess> core::future::Future for AdcFuture<ADCI> {
-        type Output = ();
-
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            if ADCI::is_done() {
-                ADCI::clear_interrupt();
-                Poll::Ready(())
-            } else {
-                ADCI::waker().register(cx.waker());
-                ADCI::enable_interrupt();
-                Poll::Pending
-            }
-        }
-    }
-
-    impl<ADCI: AsyncAccess> Drop for AdcFuture<ADCI> {
-        fn drop(&mut self) {
-            ADCI::disable_interrupt();
-        }
     }
 }

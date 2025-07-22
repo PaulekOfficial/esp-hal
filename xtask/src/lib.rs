@@ -1,22 +1,27 @@
 use std::{
-    collections::VecDeque,
-    fs::{self, File},
-    io::Write as _,
+    fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Result, anyhow};
 use cargo::CargoAction;
-use clap::ValueEnum;
-use esp_metadata::{Chip, Config};
-use strum::{Display, EnumIter, IntoEnumIterator as _};
+use esp_metadata::{Chip, Config, TokenStream};
+use serde::{Deserialize, Serialize};
 
-use crate::{cargo::CargoArgsBuilder, firmware::Metadata};
+use crate::{
+    cargo::{CargoArgsBuilder, CargoToml},
+    firmware::Metadata,
+};
 
 pub mod cargo;
+pub mod changelog;
+pub mod commands;
 pub mod documentation;
 pub mod firmware;
+pub mod git;
+
+#[cfg(feature = "semver-checks")]
+pub mod semver_check;
 
 #[derive(
     Debug,
@@ -27,9 +32,10 @@ pub mod firmware;
     PartialOrd,
     Ord,
     Hash,
-    Display,
-    EnumIter,
-    ValueEnum,
+    clap::ValueEnum,
+    strum::Display,
+    strum::EnumIter,
+    strum::AsRefStr,
     serde::Deserialize,
     serde::Serialize,
 )]
@@ -39,14 +45,15 @@ pub enum Package {
     EspAlloc,
     EspBacktrace,
     EspBootloaderEspIdf,
-    EspBuild,
     EspConfig,
     EspHal,
     EspHalEmbassy,
     EspHalProcmacros,
+    EspRomSys,
     EspIeee802154,
     EspLpHal,
     EspMetadata,
+    EspMetadataGenerated,
     EspPrintln,
     EspRiscvRt,
     EspStorage,
@@ -67,34 +74,100 @@ impl Package {
         matches!(
             self,
             EspBacktrace
+                | EspBootloaderEspIdf
                 | EspHal
                 | EspHalEmbassy
+                | EspMetadataGenerated
+                | EspRomSys
                 | EspIeee802154
                 | EspLpHal
                 | EspPrintln
                 | EspStorage
                 | EspWifi
-                | XtensaLxRt
         )
+    }
+
+    /// Does the package have inline assembly?
+    pub fn has_inline_assembly(&self, workspace: &Path) -> bool {
+        // feature(asm_experimental_arch) is enabled in all crates that use Xtensa
+        // assembly, which covers crates that use assembly AND are used for both
+        // architectures (e.g. esp-backtrace).
+        // But RISC-V doesn't need this feature, so we can either scrape the crate
+        // source, or check in a list of packages.
+        if matches!(self, Package::EspRiscvRt | Package::EspLpHal) {
+            return true;
+        }
+
+        let lib_rs_path = workspace.join(self.to_string()).join("src").join("lib.rs");
+        let Ok(source) = std::fs::read_to_string(&lib_rs_path) else {
+            return false;
+        };
+
+        source
+            .lines()
+            .filter(|line| line.starts_with("#!["))
+            .any(|line| line.contains("asm_experimental_arch"))
+    }
+
+    pub fn has_migration_guide(&self, workspace: &Path) -> bool {
+        let package_path = workspace.join(self.to_string());
+
+        // Check if the package directory exists
+        let Ok(entries) = std::fs::read_dir(&package_path) else {
+            return false;
+        };
+
+        // Look for files matching the pattern "MIGRATING-*.md"
+        for entry in entries.flatten() {
+            if let Some(file_name) = entry.file_name().to_str() {
+                if file_name.starts_with("MIGRATING-") && file_name.ends_with(".md") {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    pub fn needs_build_std(&self) -> bool {
+        use Package::*;
+
+        !matches!(self, EspConfig | EspMetadata)
     }
 
     /// Do the package's chip-specific cargo features affect the public API?
     pub fn chip_features_matter(&self) -> bool {
         use Package::*;
 
-        matches!(self, EspHal | EspLpHal | EspWifi)
+        matches!(
+            self,
+            EspHal
+                | EspLpHal
+                | EspWifi
+                | EspHalEmbassy
+                | EspRomSys
+                | EspBootloaderEspIdf
+                | EspMetadataGenerated
+        )
     }
 
-    /// Should documentation be built for the package?
-    pub fn is_published(&self) -> bool {
-        !matches!(self, Package::Examples | Package::HilTest | Package::QaTest)
+    /// Should documentation be built for the package, and should the package be
+    /// published?
+    pub fn is_published(&self, workspace: &Path) -> bool {
+        // TODO: we should use some sort of cache instead of parsing the TOML every
+        // time, but for now this should be good enough.
+        let toml =
+            crate::cargo::CargoToml::new(workspace, *self).expect("Failed to parse Cargo.toml");
+        toml.is_published()
     }
 
     /// Build on host
-    pub fn build_on_host(&self) -> bool {
-        use Package::*;
-
-        matches!(self, EspBuild | EspConfig | EspMetadata)
+    pub fn build_on_host(&self, features: &[String]) -> bool {
+        match self {
+            Self::EspConfig | Self::EspMetadata => true,
+            Self::EspMetadataGenerated if features.iter().any(|f| f == "build-script") => true,
+            _ => false,
+        }
     }
 
     /// Given a device config, return the features which should be enabled for
@@ -106,20 +179,22 @@ impl Package {
             Package::EspConfig => features.push("build".to_owned()),
             Package::EspHal => {
                 features.push("unstable".to_owned());
+                features.push("rt".to_owned());
                 if config.contains("psram") {
                     // TODO this doesn't test octal psram (since `ESP_HAL_CONFIG_PSRAM_MODE`
                     // defaults to `quad`) as it would require a separate build
                     features.push("psram".to_owned())
                 }
                 if config.contains("usb0") {
-                    features.push("usb-otg".to_owned());
+                    features.push("__usb_otg".to_owned());
                 }
                 if config.contains("bt") {
-                    features.push("bluetooth".to_owned());
+                    features.push("__bluetooth".to_owned());
                 }
             }
             Package::EspWifi => {
                 features.push("esp-hal/unstable".to_owned());
+                features.push("esp-hal/rt".to_owned());
                 features.push("defmt".to_owned());
                 if config.contains("wifi") {
                     features.push("wifi".to_owned());
@@ -128,10 +203,10 @@ impl Package {
                     features.push("smoltcp/proto-ipv4".to_owned());
                     features.push("smoltcp/proto-ipv6".to_owned());
                 }
-                if config.contains("ble") {
+                if config.contains("bt") {
                     features.push("ble".to_owned());
                 }
-                if config.contains("coex") {
+                if config.contains("wifi") && config.contains("bt") {
                     features.push("coex".to_owned());
                 }
             }
@@ -140,12 +215,14 @@ impl Package {
             }
             Package::EspHalEmbassy => {
                 features.push("esp-hal/unstable".to_owned());
+                features.push("esp-hal/rt".to_owned());
                 features.push("defmt".to_owned());
                 features.push("executors".to_owned());
             }
             Package::EspIeee802154 => {
                 features.push("defmt".to_owned());
                 features.push("esp-hal/unstable".to_owned());
+                features.push("esp-hal/rt".to_owned());
             }
             Package::EspLpHal => {
                 if config.contains("lp_core") {
@@ -157,11 +234,7 @@ impl Package {
                 features.push("auto".to_owned());
                 features.push("defmt-espflash".to_owned());
             }
-            Package::EspStorage => {
-                features.push("storage".to_owned());
-                features.push("nor-flash".to_owned());
-                features.push("low-level".to_owned());
-            }
+            Package::EspStorage => {}
             Package::EspBootloaderEspIdf => {
                 features.push("defmt".to_owned());
                 features.push("validation".to_owned());
@@ -169,6 +242,7 @@ impl Package {
             Package::EspAlloc => {
                 features.push("defmt".to_owned());
             }
+            Package::EspMetadataGenerated => {}
             _ => {}
         }
 
@@ -180,12 +254,26 @@ impl Package {
         let mut cases = Vec::new();
 
         match self {
+            Package::EspHal => {
+                // This checks if the `esp-hal` crate compiles with the no features (other than the
+                // chip selection)
+
+                // This tests that disabling the `rt` feature works
+                cases.push(vec![]);
+                // This checks if the `esp-hal` crate compiles _without_ the `unstable` feature
+                // enabled
+                cases.push(vec!["rt".to_owned()]);
+            }
             Package::EspWifi => {
-                // minimal set of features that when enabled _should_ still compile
+                // Minimal set of features that when enabled _should_ still compile:
                 cases.push(vec![
+                    "esp-hal/rt".to_owned(),
                     "esp-hal/unstable".to_owned(),
                     "builtin-scheduler".to_owned(),
                 ]);
+            }
+            Package::EspMetadataGenerated => {
+                cases.push(vec!["build-script".to_owned()]);
             }
             _ => {}
         }
@@ -194,9 +282,9 @@ impl Package {
     }
 
     /// Return the target triple for a given package/chip pair.
-    pub fn target_triple(&self, chip: &Chip) -> Result<&'static str> {
+    pub fn target_triple(&self, chip: &Chip) -> Result<String> {
         if *self == Package::EspLpHal {
-            chip.lp_target()
+            chip.lp_target().map(ToString::to_string)
         } else {
             Ok(chip.target())
         }
@@ -226,9 +314,18 @@ impl Package {
             ))
         }
     }
+
+    pub fn tag(&self, version: &semver::Version) -> String {
+        format!("{self}-v{version}")
+    }
+
+    #[cfg(feature = "release")]
+    fn is_semver_checked(&self) -> bool {
+        [Self::EspHal].contains(self)
+    }
 }
 
-#[derive(Debug, Clone, Copy, Display, ValueEnum)]
+#[derive(Debug, Clone, Copy, strum::Display, clap::ValueEnum, Serialize, Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub enum Version {
     Major,
@@ -245,6 +342,8 @@ pub fn execute_app(
     action: CargoAction,
     repeat: usize,
     debug: bool,
+    toolchain: Option<&str>,
+    timings: bool,
 ) -> Result<()> {
     let package = app.example_path().strip_prefix(package_path)?;
     log::info!("Building example '{}' for '{}'", package.display(), chip);
@@ -286,18 +385,34 @@ pub fn execute_app(
     };
     builder = builder.subcommand(subcommand);
 
+    for config in app.cargo_config() {
+        log::info!(" Cargo --config: {config}");
+        builder.add_arg("--config").add_arg(config);
+        // Some configuration requires nightly rust, so let's just assume it. May be
+        // overwritten by the esp toolchain on xtensa.
+        builder = builder.toolchain("nightly");
+    }
+
     if !debug {
         builder.add_arg("--release");
     }
-
-    // If targeting an Xtensa device, we must use the '+esp' toolchain modifier:
-    if target.starts_with("xtensa") {
-        builder = builder.toolchain("esp");
-        builder.add_arg("-Zbuild-std=core,alloc");
+    if timings {
+        builder.add_arg("--timings");
     }
 
-    if subcommand == "test" && chip == Chip::Esp32c2 {
-        builder.add_arg("--").add_arg("--speed").add_arg("15000");
+    let toolchain = match toolchain {
+        // Preserve user choice
+        Some(tc) => Some(tc),
+        // If targeting an Xtensa device, we must use the '+esp' toolchain modifier:
+        _ if target.starts_with("xtensa") => Some("esp"),
+        _ => None,
+    };
+
+    if let Some(toolchain) = toolchain {
+        if toolchain.starts_with("esp") {
+            builder = builder.arg("-Zbuild-std=core,alloc");
+        }
+        builder = builder.toolchain(toolchain);
     }
 
     let args = builder.build();
@@ -314,7 +429,7 @@ pub fn execute_app(
         let output = cargo::run_with_env(&args, package_path, env_vars, true)?;
         for line in output.lines() {
             if let Ok(artifact) = serde_json::from_str::<cargo::Artifact>(line) {
-                let out_dir = out_dir.join(&chip.to_string());
+                let out_dir = out_dir.join(chip.to_string());
                 std::fs::create_dir_all(&out_dir)?;
 
                 let output_file = out_dir.join(app.output_file_name());
@@ -329,273 +444,6 @@ pub fn execute_app(
             }
             cargo::run_with_env(&args, package_path, env_vars.clone(), false)?;
         }
-    }
-
-    Ok(())
-}
-
-/// Build the specified package, using the given toolchain/target/features if
-/// provided.
-pub fn build_package(
-    package_path: &Path,
-    features: Vec<String>,
-    no_default_features: bool,
-    toolchain: Option<String>,
-    target: Option<String>,
-) -> Result<()> {
-    log::info!("Building package '{}'", package_path.display());
-    if !features.is_empty() {
-        log::info!("  Features: {}", features.join(","));
-    }
-    if let Some(ref target) = target {
-        log::info!("  Target:   {}", target);
-    }
-
-    let mut builder = CargoArgsBuilder::default()
-        .subcommand("build")
-        .arg("--release");
-
-    if let Some(toolchain) = toolchain {
-        builder = builder.toolchain(toolchain);
-    }
-
-    if let Some(target) = target {
-        // If targeting an Xtensa device, we must use the '+esp' toolchain modifier:
-        if target.starts_with("xtensa") {
-            builder = builder.toolchain("esp");
-            builder = builder.arg("-Zbuild-std=core,alloc")
-        }
-        builder = builder.target(target);
-    }
-
-    if !features.is_empty() {
-        builder = builder.features(&features);
-    }
-
-    if no_default_features {
-        builder = builder.arg("--no-default-features");
-    }
-
-    let args = builder.build();
-    log::debug!("{args:#?}");
-
-    cargo::run(&args, package_path)?;
-
-    Ok(())
-}
-
-/// Bump the version of the specified package by the specified amount.
-pub fn bump_version(workspace: &Path, package: Package, amount: Version) -> Result<()> {
-    let manifest_path = workspace.join(package.to_string()).join("Cargo.toml");
-    let manifest = fs::read_to_string(&manifest_path)
-        .with_context(|| format!("Could not read {}", manifest_path.display()))?;
-
-    let mut manifest = manifest.parse::<toml_edit::DocumentMut>()?;
-
-    let version = manifest["package"]["version"]
-        .to_string()
-        .trim()
-        .trim_matches('"')
-        .to_string();
-    let prev_version = &version;
-
-    let mut version = semver::Version::parse(&version)?;
-    match amount {
-        Version::Major => {
-            version.major += 1;
-            version.minor = 0;
-            version.patch = 0;
-        }
-        Version::Minor => {
-            version.minor += 1;
-            version.patch = 0;
-        }
-        Version::Patch => {
-            version.patch += 1;
-        }
-    }
-
-    log::info!("Bumping version for package: {package} ({prev_version} -> {version})");
-
-    manifest["package"]["version"] = toml_edit::value(version.to_string());
-    fs::write(manifest_path, manifest.to_string())?;
-
-    for pkg in
-        Package::iter().filter(|p| ![package, Package::Examples, Package::HilTest].contains(p))
-    {
-        let manifest_path = workspace.join(pkg.to_string()).join("Cargo.toml");
-        let manifest = fs::read_to_string(&manifest_path)
-            .with_context(|| format!("Could not read {}", manifest_path.display()))?;
-
-        let mut manifest = manifest.parse::<toml_edit::DocumentMut>()?;
-
-        if manifest["dependencies"]
-            .as_table()
-            .unwrap()
-            .contains_key(&package.to_string())
-        {
-            log::info!(
-                "  Bumping {package} version for package {pkg}: ({prev_version} -> {version})"
-            );
-
-            manifest["dependencies"].as_table_mut().map(|table| {
-                table[&package.to_string()]["version"] = toml_edit::value(version.to_string())
-            });
-
-            fs::write(&manifest_path, manifest.to_string())
-                .with_context(|| format!("Could not write {}", manifest_path.display()))?;
-        }
-    }
-
-    Ok(())
-}
-
-// File header for the generated eFuse fields.
-const EFUSE_FIELDS_RS_HEADER: &str = r#"
-//! eFuse fields for the $CHIP.
-//!
-//! This file was automatically generated, please do not edit it manually!
-//!
-//! For information on how to regenerate these files, please refer to the
-//! `xtask` package's `README.md` file.
-//!
-//! Generated on:   $DATE
-//! ESP-IDF Commit: $HASH
-
-use super::EfuseBlock;
-use crate::soc::efuse_field::EfuseField;
-"#;
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-struct EfuseField {
-    field_name: String,
-    efuse_block: String,
-    bit_start: u32,
-    bit_count: u32,
-    description: String,
-}
-
-/// Generate Rust constants for each eFuse field defined in the given CSV file.
-pub fn generate_efuse_table(
-    chip: &Chip,
-    idf_path: impl AsRef<Path>,
-    out_path: impl AsRef<Path>,
-) -> Result<()> {
-    let idf_path = idf_path.as_ref();
-    let out_path = out_path.as_ref();
-
-    // We will put the date of generation in the file header:
-    let date = chrono::Utc::now().date_naive();
-
-    // Determine the commit (short) hash of the HEAD commit in the
-    // provided ESP-IDF repository:
-    let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(idf_path)
-        .output()?;
-    let idf_hash = String::from_utf8_lossy(&output.stdout[0..=7]).to_string();
-
-    // Read the CSV file containing the eFuse field definitions:
-    let csv_path = idf_path
-        .join("components")
-        .join("efuse")
-        .join(chip.to_string())
-        .join("esp_efuse_table.csv");
-
-    // Create the reader and writer from our source and destination file paths:
-    let mut reader = csv::ReaderBuilder::new()
-        .comment(Some(b'#'))
-        .has_headers(false)
-        .trim(csv::Trim::All)
-        .from_path(csv_path)?;
-    let mut writer = File::create(out_path)?;
-
-    // Write the header to the destination file:
-    writeln!(
-        writer,
-        "{}",
-        EFUSE_FIELDS_RS_HEADER
-            .trim_start()
-            .replace("$CHIP", chip.pretty_name())
-            .replace("$DATE", &date.to_string())
-            .replace("$HASH", &idf_hash)
-    )?;
-
-    // Build a vector of parsed eFuse fields; we build this vector up first rather
-    // than writing directly to the destination file, as we need to do some
-    // pre-processing first:
-    let mut fields = VecDeque::new();
-    for result in reader.deserialize() {
-        // We will print a warning and just ignore any fields which cannot be
-        // successfull parsed:
-        let mut efuse_field: EfuseField = match result {
-            Ok(field) => field,
-            Err(e) => {
-                log::warn!("{e}");
-                continue;
-            }
-        };
-
-        // Remove any comments from the eFuse field descriptions:
-        efuse_field.description.truncate(
-            if let Some((prefix, _comment)) = efuse_field.description.split_once('#') {
-                prefix
-            } else {
-                &efuse_field.description
-            }
-            .trim_end()
-            .len(),
-        );
-
-        // Link to other eFuse fields in documentation, using code blocks:
-        efuse_field.description = efuse_field
-            .description
-            .replace('[', "`[")
-            .replace(']', "]`");
-
-        // Convert the eFuse field name into a valid Rust iddentifier:
-        efuse_field.field_name = efuse_field.field_name.replace('.', "_");
-
-        // Replace any non-digit characters in the eFuse block:
-        efuse_field.efuse_block = efuse_field
-            .efuse_block
-            .replace(|c: char| !c.is_ascii_digit(), "");
-
-        fields.push_back(efuse_field);
-    }
-
-    // Now that we've parsed all eFuse field definitions, we can perform our
-    // pre-processing; right now, this just means handling any multi-world
-    // fields:
-    let mut i = 0;
-    while i < fields.len() {
-        let field = fields[i].clone();
-
-        if field.field_name.is_empty() {
-            let mut prev = fields[i - 1].clone();
-            prev.bit_start = field.bit_start;
-            prev.bit_count += field.bit_count;
-            fields[i - 1] = prev;
-
-            fields.retain(|x| *x != field);
-        } else {
-            i += 1;
-        }
-    }
-
-    // Finally, write out each eFuse field definition to the destination file:
-    while let Some(EfuseField {
-        field_name,
-        efuse_block,
-        bit_start,
-        bit_count,
-        description,
-    }) = fields.pop_front()
-    {
-        writeln!(writer, "/// {description}")?;
-        writeln!(writer,
-            "pub const {field_name}: EfuseField = EfuseField::new(EfuseBlock::Block{efuse_block}, {bit_start}, {bit_count});"
-        )?;
     }
 
     Ok(())
@@ -629,10 +477,8 @@ pub fn package_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for entry in fs::read_dir(workspace)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            if entry.path().join("Cargo.toml").exists() {
-                paths.push(entry.path());
-            }
+        if entry.file_type()?.is_dir() && entry.path().join("Cargo.toml").exists() {
+            paths.push(entry.path());
         }
     }
 
@@ -643,26 +489,142 @@ pub fn package_paths(workspace: &Path) -> Result<Vec<PathBuf>> {
 
 /// Parse the version from the specified package's Cargo manifest.
 pub fn package_version(workspace: &Path, package: Package) -> Result<semver::Version> {
-    #[derive(Debug, serde::Deserialize)]
-    pub struct Manifest {
-        package: Package,
-    }
-
-    #[derive(Debug, serde::Deserialize)]
-    pub struct Package {
-        version: semver::Version,
-    }
-
-    let path = workspace.join(package.to_string()).join("Cargo.toml");
-    let path = windows_safe_path(&path);
-    let manifest =
-        fs::read_to_string(&path).with_context(|| format!("Could not read {}", path.display()))?;
-    let manifest: Manifest = basic_toml::from_str(&manifest)?;
-
-    Ok(manifest.package.version)
+    CargoToml::new(workspace, package).map(|toml| toml.package_version())
 }
 
 /// Make the path "Windows"-safe
 pub fn windows_safe_path(path: &Path) -> PathBuf {
     PathBuf::from(path.to_str().unwrap().to_string().replace("\\\\?\\", ""))
+}
+
+pub fn format_package(workspace: &Path, package: Package, check: bool) -> Result<()> {
+    log::info!("Formatting package: {}", package);
+    let path = workspace.join(package.as_ref());
+
+    // we need to list all source files since modules in `unstable_module!` macros
+    // won't get picked up otherwise
+    let source_files = walkdir::WalkDir::new(path.join("src"))
+        .into_iter()
+        .filter_map(|entry| {
+            let path = entry.unwrap().into_path();
+            if let Some("rs") = path.extension().unwrap_or_default().to_str() {
+                Some(String::from(path.to_str().unwrap()))
+            } else {
+                None
+            }
+        });
+
+    let mut cargo_args = CargoArgsBuilder::default()
+        .toolchain("nightly")
+        .subcommand("fmt")
+        .arg("--all")
+        .build();
+
+    if check {
+        cargo_args.push("--check".into());
+    }
+
+    cargo_args.push("--".into());
+    cargo_args.push(format!(
+        "--config-path={}/rustfmt.toml",
+        workspace.display()
+    ));
+    cargo_args.extend(source_files);
+
+    cargo::run(&cargo_args, &path)?;
+
+    Ok(())
+}
+
+pub fn update_metadata(workspace: &Path, check: bool) -> Result<()> {
+    update_chip_support_table(workspace)?;
+    generate_metadata(workspace, save)?;
+
+    format_package(workspace, Package::EspMetadataGenerated, false)?;
+
+    if check {
+        let res = std::process::Command::new("git")
+            .args(["diff", "HEAD", "esp-metadata-generated"])
+            .output()?;
+        if !res.stdout.is_empty() {
+            return Err(anyhow::Error::msg(
+                "detected `esp-metadata-generated` changes. Run `cargo xtask update-metadata`, and commit the changes.",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn generate_metadata(
+    workspace: &Path,
+    call_for_file: fn(&Path, TokenStream) -> Result<()>,
+) -> Result<()> {
+    use strum::IntoEnumIterator;
+
+    let out_path = workspace.join("esp-metadata-generated").join("src");
+
+    for chip in Chip::iter() {
+        let config = esp_metadata::Config::for_chip(&chip);
+        call_for_file(
+            &out_path.join(format!("_generated_{chip}.rs")),
+            config.generate_metadata(),
+        )?;
+    }
+
+    call_for_file(
+        &out_path.join("_build_script_utils.rs"),
+        esp_metadata::generate_build_script_utils(),
+    )?;
+
+    call_for_file(&out_path.join("lib.rs"), esp_metadata::generate_lib_rs())?;
+
+    Ok(())
+}
+
+fn save(out_path: &Path, tokens: TokenStream) -> Result<()> {
+    let source = tokens.to_string();
+
+    let syntax_tree = syn::parse_file(&source)?;
+    let mut source = String::from(
+        "// Do NOT edit this file directly. Make your changes to esp-metadata,\n// then run `cargo xtask update-metadata`.\n\n",
+    );
+    source.push_str(&prettyplease::unparse(&syntax_tree));
+
+    std::fs::write(out_path, source)?;
+
+    Ok(())
+}
+
+fn update_chip_support_table(workspace: &Path) -> Result<()> {
+    let mut output = String::new();
+    let readme = std::fs::read_to_string(workspace.join("esp-hal").join("README.md"))?;
+
+    let mut in_support_table = false;
+    let mut generate_support_table = true;
+    for line in readme.lines() {
+        let mut copy_line = true;
+        if line.trim() == "<!-- start chip support table -->" {
+            in_support_table = true;
+        } else if line.trim() == "<!-- end chip support table -->" {
+            in_support_table = false;
+        } else {
+            copy_line = !in_support_table;
+        }
+        if !copy_line {
+            continue;
+        }
+        output.push_str(line);
+        output.push('\n');
+
+        if in_support_table && generate_support_table {
+            esp_metadata::generate_chip_support_status(&mut output)?;
+
+            generate_support_table = false;
+        }
+    }
+
+    std::fs::write(workspace.join("esp-hal").join("README.md"), output)?;
+
+    Ok(())
 }

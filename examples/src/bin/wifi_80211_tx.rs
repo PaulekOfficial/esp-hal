@@ -1,7 +1,6 @@
 //! WiFi frame injection example
 //!
 //! Periodically transmits a beacon frame.
-//!
 
 //% FEATURES: esp-wifi esp-wifi/wifi esp-wifi/sniffer esp-hal/unstable
 //% CHIPS: esp32 esp32s2 esp32s3 esp32c2 esp32c3 esp32c6
@@ -13,14 +12,7 @@ use core::marker::PhantomData;
 
 use esp_alloc as _;
 use esp_backtrace as _;
-use esp_hal::{
-    clock::CpuClock,
-    delay::Delay,
-    main,
-    rng::Rng,
-    time::Duration,
-    timer::timg::TimerGroup,
-};
+use esp_hal::{clock::CpuClock, delay::Delay, main, time::Duration, timer::timg::TimerGroup};
 use esp_println::println;
 use esp_wifi::{init, wifi};
 use ieee80211::{
@@ -31,6 +23,8 @@ use ieee80211::{
     scroll::Pwrite,
     supported_rates,
 };
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 const SSID: &str = "esp-wifi 802.11 injection";
 /// This is an arbitrary MAC address, used for the fake beacon frames.
@@ -48,12 +42,7 @@ fn main() -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let esp_wifi_ctrl = init(
-        timg0.timer0,
-        Rng::new(peripherals.RNG),
-        peripherals.RADIO_CLK,
-    )
-    .unwrap();
+    let esp_wifi_ctrl = init(timg0.timer0).unwrap();
 
     // We must initialize some kind of interface and start it.
     let (mut controller, interfaces) =

@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # Interrupt support
 //!
 //! ## Overview
@@ -29,9 +30,8 @@
 //! ### Using the peripheral driver to register an interrupt handler
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
-//! let mut sw_int =
-//!     SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+//! # {before_snippet}
+//! let mut sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
 //! critical_section::with(|cs| {
 //!     sw_int
 //!         .software_interrupt0
@@ -42,7 +42,7 @@
 //! });
 //!
 //! critical_section::with(|cs| {
-//!     if let Some(swint) = SWINT0.borrow_ref(cs).as_ref(){
+//!     if let Some(swint) = SWINT0.borrow_ref(cs).as_ref() {
 //!         swint.raise();
 //!     }
 //! });
@@ -57,8 +57,7 @@
 //! # use esp_hal::interrupt::Priority;
 //! # use esp_hal::interrupt::InterruptHandler;
 //! #
-//! static SWINT0: Mutex<RefCell<Option<SoftwareInterrupt<0>>>> =
-//!     Mutex::new(RefCell::new(None));
+//! static SWINT0: Mutex<RefCell<Option<SoftwareInterrupt<0>>>> = Mutex::new(RefCell::new(None));
 //!
 //! #[handler(priority = Priority::Priority1)]
 //! fn swint0_handler() {
@@ -85,14 +84,23 @@ mod xtensa;
 
 pub mod software;
 
+#[cfg(feature = "rt")]
 #[unsafe(no_mangle)]
-extern "C" fn EspDefaultHandler(_interrupt: crate::peripherals::Interrupt) {
-    panic!("Unhandled interrupt: {:?}", _interrupt);
+extern "C" fn EspDefaultHandler() {
+    panic!("Unhandled interrupt");
 }
 
 /// Default (unhandled) interrupt handler
 pub const DEFAULT_INTERRUPT_HANDLER: InterruptHandler = InterruptHandler::new(
-    unsafe { core::mem::transmute::<*const (), extern "C" fn()>(EspDefaultHandler as *const ()) },
+    {
+        unsafe extern "C" {
+            fn EspDefaultHandler();
+        }
+
+        unsafe {
+            core::mem::transmute::<unsafe extern "C" fn(), extern "C" fn()>(EspDefaultHandler)
+        }
+    },
     Priority::min(),
 );
 
@@ -122,7 +130,7 @@ pub trait InterruptConfigurable: crate::private::Sealed {
     multi_core,
     doc = "**Note**: Interrupts are handled on the core they were setup on, if a driver is initialized on core 0, and moved to core 1, core 0 will still handle the interrupt."
 )]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct InterruptHandler {
     f: extern "C" fn(),
@@ -149,14 +157,7 @@ impl InterruptHandler {
     }
 }
 
-#[cfg(large_intr_status)]
-const STATUS_WORDS: usize = 3;
-
-#[cfg(very_large_intr_status)]
-const STATUS_WORDS: usize = 4;
-
-#[cfg(not(any(large_intr_status, very_large_intr_status)))]
-const STATUS_WORDS: usize = 2;
+const STATUS_WORDS: usize = property!("interrupts.status_registers");
 
 /// Representation of peripheral-interrupt status bits.
 #[derive(Clone, Copy, Default, Debug)]
@@ -171,21 +172,21 @@ impl InterruptStatus {
         }
     }
 
-    #[cfg(large_intr_status)]
+    #[cfg(interrupts_status_registers = "3")]
     const fn from(w0: u32, w1: u32, w2: u32) -> Self {
         Self {
             status: [w0, w1, w2],
         }
     }
 
-    #[cfg(very_large_intr_status)]
+    #[cfg(interrupts_status_registers = "4")]
     const fn from(w0: u32, w1: u32, w2: u32, w3: u32) -> Self {
         Self {
             status: [w0, w1, w2, w3],
         }
     }
 
-    #[cfg(not(any(large_intr_status, very_large_intr_status)))]
+    #[cfg(interrupts_status_registers = "2")]
     const fn from(w0: u32, w1: u32) -> Self {
         Self { status: [w0, w1] }
     }
@@ -213,7 +214,7 @@ impl BitAnd for InterruptStatus {
     type Output = InterruptStatus;
 
     fn bitand(self, rhs: Self) -> Self::Output {
-        #[cfg(large_intr_status)]
+        #[cfg(interrupts_status_registers = "3")]
         return Self::Output {
             status: [
                 self.status[0] & rhs.status[0],
@@ -222,7 +223,7 @@ impl BitAnd for InterruptStatus {
             ],
         };
 
-        #[cfg(very_large_intr_status)]
+        #[cfg(interrupts_status_registers = "4")]
         return Self::Output {
             status: [
                 self.status[0] & rhs.status[0],
@@ -232,7 +233,7 @@ impl BitAnd for InterruptStatus {
             ],
         };
 
-        #[cfg(not(any(large_intr_status, very_large_intr_status)))]
+        #[cfg(interrupts_status_registers = "2")]
         return Self::Output {
             status: [
                 self.status[0] & rhs.status[0],

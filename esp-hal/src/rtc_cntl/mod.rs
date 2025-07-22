@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, procmacros::doc_replace)]
 //! # Real-Time Control and Low-power Management (RTC_CNTL)
 //!
 //! ## Overview
@@ -11,17 +12,17 @@
 //! sources and low-power management. The driver provides the following features
 //! and functionalities:
 //!
-//!    * Clock Configuration
-//!    * Calibration
-//!    * Low-Power Management
-//!    * Handling Watchdog Timers
+//! * Clock Configuration
+//! * Calibration
+//! * Low-Power Management
+//! * Handling Watchdog Timers
 //!
 //! ## Examples
 //!
 //! ### Get time in ms from the RTC Timer
 //!
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use core::time::Duration;
 //! # use esp_hal::{delay::Delay, rtc_cntl::Rtc};
 //!
@@ -39,10 +40,10 @@
 //! }
 //! # }
 //! ```
-//! 
+//!
 //! ### RWDT usage
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use core::cell::RefCell;
 //! # use critical_section::Mutex;
 //! # use esp_hal::delay::Delay;
@@ -55,12 +56,12 @@
 //! let mut rtc = Rtc::new(peripherals.LPWR);
 //!
 //! rtc.set_interrupt_handler(interrupt_handler);
-//! rtc.rwdt.set_timeout(RwdtStage::Stage0, Duration::from_millis(2000));
+//! rtc.rwdt
+//!     .set_timeout(RwdtStage::Stage0, Duration::from_millis(2000));
 //! rtc.rwdt.listen();
 //!
 //! critical_section::with(|cs| RWDT.borrow_ref_mut(cs).replace(rtc.rwdt));
-//! # Ok(())
-//! # }
+//! # {after_snippet}
 //!
 //! // Where the `LP_WDT` interrupt handler is defined as:
 //! # use core::cell::RefCell;
@@ -81,19 +82,16 @@
 //!
 //!             println!("Restarting in 5 seconds...");
 //!
-//!             rwdt.set_timeout(
-//!                 RwdtStage::Stage0,
-//!                 Duration::from_millis(5000),
-//!             );
+//!             rwdt.set_timeout(RwdtStage::Stage0, Duration::from_millis(5000));
 //!             rwdt.unlisten();
 //!         }
 //!     });
 //! }
 //! ```
-//! 
+//!
 //! ### Get time in ms from the RTC Timer
 //! ```rust, no_run
-#![doc = crate::before_snippet!()]
+//! # {before_snippet}
 //! # use core::time::Duration;
 //! # use esp_hal::{delay::Delay, rtc_cntl::Rtc};
 //!
@@ -365,8 +363,7 @@ impl<'d> Rtc<'d> {
 
         // In terms of peripherals:
 
-        // - LPWR is used on the following chips: esp32, esp32p4, esp32c2, esp32c3,
-        //   esp32s2, esp32s3
+        // - LPWR is used on the following chips: esp32, esp32p4, esp32c2, esp32c3, esp32s2, esp32s3
 
         // - LP_AON is used on the following chips: esp32c5, esp32c6, esp32c61, esp32h2
 
@@ -397,6 +394,7 @@ impl<'d> Rtc<'d> {
         h.write(|w| unsafe { w.bits((boot_time_us >> 32) as u32) });
     }
 
+    #[procmacros::doc_replace]
     /// Get the current time in microseconds.
     ///
     /// # Example
@@ -406,19 +404,19 @@ impl<'d> Rtc<'d> {
     /// environments without dynamic memory allocation.
     ///
     /// ```rust, no_run
-    #[doc = crate::before_snippet!()]
+    /// # {before_snippet}
     /// # use esp_hal::rtc_cntl::Rtc;
-    /// use jiff::{Timestamp, tz::{self, TimeZone}};
+    /// use jiff::{
+    ///     Timestamp,
+    ///     tz::{self, TimeZone},
+    /// };
     ///
     /// static TZ: TimeZone = tz::get!("America/New_York");
     ///
     /// let rtc = Rtc::new(peripherals.LPWR);
-    /// let now = Timestamp::from_microsecond(
-    ///     rtc.current_time_us() as i64,
-    /// )?;
+    /// let now = Timestamp::from_microsecond(rtc.current_time_us() as i64)?;
     /// let weekday_in_new_york = now.to_zoned(TZ.clone()).weekday();
-    /// # Ok(())
-    /// # }
+    /// # {after_snippet}
     /// ```
     pub fn current_time_us(&self) -> u64 {
         // Current time is boot time + time since boot
@@ -457,6 +455,12 @@ impl<'d> Rtc<'d> {
     }
 
     /// Enter deep sleep and wake with the provided `wake_sources`.
+    ///
+    /// In Deep-sleep mode, the CPUs, most of the RAM, and all digital
+    /// peripherals that are clocked from APB_CLK are powered off.
+    ///
+    /// You can use the [`#[esp_hal::ram(persistent)]`][procmacros::ram]
+    /// attribute to persist a variable though deep sleep.
     #[cfg(any(esp32, esp32s2, esp32s3, esp32c3, esp32c6, esp32c2))]
     pub fn sleep_deep(&mut self, wake_sources: &[&dyn WakeSource]) -> ! {
         let config = RtcSleepConfig::deep();
@@ -558,27 +562,25 @@ impl RtcClock {
         let rtc_cntl = LPWR::regs();
 
         if clk_8m_en {
+            // clk_ll_rc_fast_enable
             rtc_cntl.clk_conf().modify(|_, w| w.enb_ck8m().clear_bit());
-            unsafe {
-                rtc_cntl.timer1().modify(|_, w| w.ck8m_wait().bits(5));
-            }
+
+            rtc_cntl
+                .timer1()
+                .modify(|_, w| unsafe { w.ck8m_wait().bits(5) });
+
             crate::rom::ets_delay_us(50);
         } else {
+            // clk_ll_rc_fast_disable
             rtc_cntl.clk_conf().modify(|_, w| w.enb_ck8m().set_bit());
             rtc_cntl
                 .timer1()
                 .modify(|_, w| unsafe { w.ck8m_wait().bits(20) });
         }
 
-        if d256_en {
-            rtc_cntl
-                .clk_conf()
-                .modify(|_, w| w.enb_ck8m_div().clear_bit());
-        } else {
-            rtc_cntl
-                .clk_conf()
-                .modify(|_, w| w.enb_ck8m_div().set_bit());
-        }
+        rtc_cntl
+            .clk_conf()
+            .modify(|_, w| w.enb_ck8m_div().bit(!d256_en));
     }
 
     pub(crate) fn read_xtal_freq_mhz() -> Option<u32> {
@@ -722,12 +724,9 @@ impl RtcClock {
 
         // Prepare calibration
         timg0.rtccalicfg().modify(|_, w| unsafe {
-            w.rtc_cali_clk_sel()
-                .bits(cal_clk as u8)
-                .rtc_cali_start_cycling()
-                .clear_bit()
-                .rtc_cali_max()
-                .bits(slowclk_cycles as u16)
+            w.rtc_cali_clk_sel().bits(cal_clk as u8);
+            w.rtc_cali_start_cycling().clear_bit();
+            w.rtc_cali_max().bits(slowclk_cycles as u16)
         });
 
         // Figure out how long to wait for calibration to finish
@@ -1023,20 +1022,13 @@ impl Rwdt {
             // Apply default settings for WDT
             unsafe {
                 rtc_cntl.wdtconfig0().modify(|_, w| {
-                    w.wdt_stg0()
-                        .bits(RwdtStageAction::ResetSystem as u8)
-                        .wdt_cpu_reset_length()
-                        .bits(7)
-                        .wdt_sys_reset_length()
-                        .bits(7)
-                        .wdt_stg1()
-                        .bits(RwdtStageAction::Off as u8)
-                        .wdt_stg2()
-                        .bits(RwdtStageAction::Off as u8)
-                        .wdt_stg3()
-                        .bits(RwdtStageAction::Off as u8)
-                        .wdt_en()
-                        .set_bit()
+                    w.wdt_stg0().bits(RwdtStageAction::ResetSystem as u8);
+                    w.wdt_cpu_reset_length().bits(7);
+                    w.wdt_sys_reset_length().bits(7);
+                    w.wdt_stg1().bits(RwdtStageAction::Off as u8);
+                    w.wdt_stg2().bits(RwdtStageAction::Off as u8);
+                    w.wdt_stg3().bits(RwdtStageAction::Off as u8);
+                    w.wdt_en().set_bit()
                 });
             }
         }
@@ -1051,63 +1043,17 @@ impl Rwdt {
         let timeout_raw = (timeout.as_millis() * (RtcClock::cycles_to_1ms() as u64)) as u32;
         self.set_write_protection(false);
 
-        unsafe {
-            #[cfg(esp32)]
-            match stage {
-                RwdtStage::Stage0 => rtc_cntl
-                    .wdtconfig1()
-                    .modify(|_, w| w.wdt_stg0_hold().bits(timeout_raw)),
-                RwdtStage::Stage1 => rtc_cntl
-                    .wdtconfig2()
-                    .modify(|_, w| w.wdt_stg1_hold().bits(timeout_raw)),
-                RwdtStage::Stage2 => rtc_cntl
-                    .wdtconfig3()
-                    .modify(|_, w| w.wdt_stg2_hold().bits(timeout_raw)),
-                RwdtStage::Stage3 => rtc_cntl
-                    .wdtconfig4()
-                    .modify(|_, w| w.wdt_stg3_hold().bits(timeout_raw)),
-            };
+        let config_reg = match stage {
+            RwdtStage::Stage0 => rtc_cntl.wdtconfig1(),
+            RwdtStage::Stage1 => rtc_cntl.wdtconfig2(),
+            RwdtStage::Stage2 => rtc_cntl.wdtconfig3(),
+            RwdtStage::Stage3 => rtc_cntl.wdtconfig4(),
+        };
 
-            #[cfg(any(esp32c6, esp32h2))]
-            match stage {
-                RwdtStage::Stage0 => rtc_cntl.config1().modify(|_, w| {
-                    w.wdt_stg0_hold()
-                        .bits(timeout_raw >> (1 + Efuse::rwdt_multiplier()))
-                }),
-                RwdtStage::Stage1 => rtc_cntl.config2().modify(|_, w| {
-                    w.wdt_stg1_hold()
-                        .bits(timeout_raw >> (1 + Efuse::rwdt_multiplier()))
-                }),
-                RwdtStage::Stage2 => rtc_cntl.config3().modify(|_, w| {
-                    w.wdt_stg2_hold()
-                        .bits(timeout_raw >> (1 + Efuse::rwdt_multiplier()))
-                }),
-                RwdtStage::Stage3 => rtc_cntl.config4().modify(|_, w| {
-                    w.wdt_stg3_hold()
-                        .bits(timeout_raw >> (1 + Efuse::rwdt_multiplier()))
-                }),
-            };
+        #[cfg(not(esp32))]
+        let timeout_raw = timeout_raw >> (1 + Efuse::rwdt_multiplier());
 
-            #[cfg(not(any(esp32, esp32c6, esp32h2)))]
-            match stage {
-                RwdtStage::Stage0 => rtc_cntl.wdtconfig1().modify(|_, w| {
-                    w.wdt_stg0_hold()
-                        .bits(timeout_raw >> (1 + Efuse::rwdt_multiplier()))
-                }),
-                RwdtStage::Stage1 => rtc_cntl.wdtconfig2().modify(|_, w| {
-                    w.wdt_stg1_hold()
-                        .bits(timeout_raw >> (1 + Efuse::rwdt_multiplier()))
-                }),
-                RwdtStage::Stage2 => rtc_cntl.wdtconfig3().modify(|_, w| {
-                    w.wdt_stg2_hold()
-                        .bits(timeout_raw >> (1 + Efuse::rwdt_multiplier()))
-                }),
-                RwdtStage::Stage3 => rtc_cntl.wdtconfig4().modify(|_, w| {
-                    w.wdt_stg3_hold()
-                        .bits(timeout_raw >> (1 + Efuse::rwdt_multiplier()))
-                }),
-            };
-        }
+        config_reg.modify(|_, w| unsafe { w.hold().bits(timeout_raw) });
 
         self.set_write_protection(true);
     }
@@ -1117,21 +1063,14 @@ impl Rwdt {
         let rtc_cntl = LP_WDT::regs();
 
         self.set_write_protection(false);
-
-        match stage {
-            RwdtStage::Stage0 => rtc_cntl
-                .wdtconfig0()
-                .modify(|_, w| unsafe { w.wdt_stg0().bits(action as u8) }),
-            RwdtStage::Stage1 => rtc_cntl
-                .wdtconfig0()
-                .modify(|_, w| unsafe { w.wdt_stg1().bits(action as u8) }),
-            RwdtStage::Stage2 => rtc_cntl
-                .wdtconfig0()
-                .modify(|_, w| unsafe { w.wdt_stg2().bits(action as u8) }),
-            RwdtStage::Stage3 => rtc_cntl
-                .wdtconfig0()
-                .modify(|_, w| unsafe { w.wdt_stg3().bits(action as u8) }),
-        };
+        rtc_cntl.wdtconfig0().modify(|_, w| unsafe {
+            match stage {
+                RwdtStage::Stage0 => w.wdt_stg0().bits(action as u8),
+                RwdtStage::Stage1 => w.wdt_stg1().bits(action as u8),
+                RwdtStage::Stage2 => w.wdt_stg2().bits(action as u8),
+                RwdtStage::Stage3 => w.wdt_stg3().bits(action as u8),
+            }
+        });
 
         self.set_write_protection(true);
     }
@@ -1268,12 +1207,4 @@ pub fn wakeup_cause() -> SleepSource {
     }
 
     SleepSource::Undefined
-}
-
-// libphy.a can pull this in on some chips, we provide it here in the hal
-// so that either ieee or esp-wifi gets it for free without duplicating in both
-#[unsafe(no_mangle)]
-extern "C" fn rtc_clk_xtal_freq_get() -> i32 {
-    let xtal = RtcClock::xtal_freq();
-    xtal.mhz() as i32
 }

@@ -27,6 +27,8 @@ use esp_hal::{
     },
 };
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
@@ -50,7 +52,7 @@ fn main() -> ! {
         },
     );
 
-    let etm = Etm::new(peripherals.SOC_ETM);
+    let etm = Etm::new(peripherals.ETM);
     let channel0 = etm.channel0;
 
     // make sure the configured channel doesn't get dropped - dropping it will
