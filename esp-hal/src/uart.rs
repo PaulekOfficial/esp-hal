@@ -2677,6 +2677,7 @@ impl Info {
         });
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn interrupts(&self) -> EnumSet<UartInterrupt> {
         let mut res = EnumSet::new();
         let reg_block = self.regs();
@@ -2699,6 +2700,7 @@ impl Info {
         res
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn clear_interrupts(&self, interrupts: EnumSet<UartInterrupt>) {
         let reg_block = self.regs();
 
@@ -2783,6 +2785,7 @@ impl Info {
         });
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn rx_events(&self) -> EnumSet<RxEvent> {
         let pending_interrupts = self.regs().int_raw().read();
         let mut active_events = EnumSet::new();
@@ -2812,6 +2815,7 @@ impl Info {
         active_events
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn clear_rx_events(&self, events: impl Into<EnumSet<RxEvent>>) {
         let events = events.into();
         self.regs().int_clr().write(|w| {
@@ -3141,6 +3145,7 @@ impl Info {
         }
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn rxfifo_reset(&self) {
         fn rxfifo_rst(reg_block: &RegisterBlock, enable: bool) {
             reg_block.conf0().modify(|_, w| w.rxfifo_rst().bit(enable));
@@ -3151,6 +3156,7 @@ impl Info {
         rxfifo_rst(self.regs(), false);
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn txfifo_reset(&self) {
         fn txfifo_rst(reg_block: &RegisterBlock, enable: bool) {
             reg_block.conf0().modify(|_, w| w.txfifo_rst().bit(enable));
@@ -3212,6 +3218,7 @@ impl Info {
         Ok(())
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn current_symbol_length(&self) -> u8 {
         let conf0 = self.regs().conf0().read();
         let data_bits = conf0.bit_num().bits() + 5; // 5 data bits are encoded as variant 0
@@ -3236,6 +3243,7 @@ impl Info {
     /// Reads one byte from the RX FIFO.
     ///
     /// If the FIFO is empty, the value of the returned byte is not specified.
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn read_next_from_fifo(&self) -> u8 {
         fn access_fifo_register<R>(f: impl Fn() -> R) -> R {
             // https://docs.espressif.com/projects/esp-chip-errata/en/latest/esp32/03-errata-description/esp32/cpu-subsequent-access-halted-when-get-interrupted.html
@@ -3266,12 +3274,14 @@ impl Info {
         u16::from(self.regs().status().read().txfifo_cnt().bits())
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn write_byte(&self, byte: u8) {
         self.regs()
             .fifo()
             .write(|w| unsafe { w.rxfifo_rd_byte().bits(byte) });
     }
 
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn check_for_errors(&self) -> Result<(), RxError> {
         let errors = RxEvent::FifoOvf
             | RxEvent::FifoTout
@@ -3291,11 +3301,13 @@ impl Info {
 
     #[cfg(not(esp32))]
     #[allow(clippy::unnecessary_cast)]
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn rx_fifo_count(&self) -> u16 {
         self.regs().status().read().rxfifo_cnt().bits() as u16
     }
 
     #[cfg(esp32)]
+    #[cfg_attr(place_uart_driver_in_ram, ram)]
     fn rx_fifo_count(&self) -> u16 {
         let fifo_cnt = self.regs().status().read().rxfifo_cnt().bits();
 
