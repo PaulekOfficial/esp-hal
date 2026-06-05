@@ -8,7 +8,7 @@ use crate::{
         rtc::{HpAnalog, HpSysCntlReg, HpSysPower, LpAnalog, LpSysPower},
         sleep::{SleepKind, pmu_common::SleepTimeConfig},
     },
-    soc::clocks::{self, ClockTree, LpSlowClkConfig, SocRootClkConfig},
+    soc::clocks::{self, ClockTree, LpSlowClkConfig, SocRootClkConfig, TimgCalibrationClockConfig},
 };
 
 /// Configuration for controlling the behavior during sleep modes.
@@ -716,6 +716,12 @@ impl RtcSleepConfig {
             self.pd_flags.set_pd_xtal(true);
             self.pd_flags.set_pd_hp_aon(true);
             self.pd_flags.set_pd_lp_periph(true);
+            let lp_slow_uses_xtal32k = ClockTree::with(|clocks| {
+                matches!(
+                    clocks::lp_slow_clk_config(clocks),
+                    Some(LpSlowClkConfig::Xtal32k)
+                )
+            });
             self.pd_flags.set_pd_xtal32k(!lp_slow_uses_xtal32k);
             self.pd_flags.set_pd_rc32k(true);
             self.pd_flags.set_pd_rc_fast(true);
