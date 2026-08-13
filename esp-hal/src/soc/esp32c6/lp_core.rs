@@ -70,9 +70,10 @@ impl<'d> LpCore<'d> {
         let mut this = Self { _lp_core: lp_core };
         this.stop();
 
+        //TODO: read this form memory.x not hardcoded, first 4kB for now
         // clear all of LP_RAM - this makes sure .bss is cleared without relying
         let lp_ram =
-            unsafe { core::slice::from_raw_parts_mut(0x5000_0000 as *mut u32, 16 * 1024 / 4) };
+            unsafe { core::slice::from_raw_parts_mut(0x5000_0000 as *mut u32, 4 * 1024 / 4) };
         lp_ram.fill(0u32);
 
         this
