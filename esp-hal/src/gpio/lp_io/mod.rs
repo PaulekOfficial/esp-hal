@@ -1,14 +1,6 @@
 #![cfg_attr(docsrs, procmacros::doc_replace(
-    "lp_io" => {
-        cfg(esp32) => "GPIO12",
-        cfg(any(esp32s2, esp32s3)) => "GPIO21",
-        cfg(esp32h2) => "GPIO8",
-        _ => "GPIO1"
-    },
-    "lp_num" => {
-        cfg(any(esp32s2, esp32s3)) => "21",
-        _ => "1"
-    }
+    "lp_io" => gpio_for_signal!(LP_GPIO1),
+    "lp_num" => "1"
 ))]
 //! Low Power IO (LP_IO)
 //!
@@ -197,25 +189,26 @@ fn route_output(lp_pin: u8, output: LpOutputSignal) {
         });
 }
 
+/// Returns the number that the low-power registers use for `gpio`, if they reach the pad.
+// Needed because AnyPin::lp_number is infallible
+pub(crate) fn lp_number(gpio: u8) -> Option<u8> {
+    for_each_lp_function! {
+        (($_signal:ident, LP_GPIOn, $pin:literal), $gpio:ident, $_af:ident, $_lp_in:tt $_lp_out:tt) => {
+            if gpio == crate::peripherals::$gpio::NUMBER {
+                return Some($pin);
+            }
+        };
+    }
+
+    None
+}
+
 /// Tokens to hand out a pin to a low-power CPU.
 // FIXME: tokens should be 'static to be handed out.
 #[cfg(ulp_riscv_driver_supported)]
 mod ulp_tokens {
     use super::*;
     use crate::gpio::Pin;
-
-    // Needed because AnyPin::lp_number is infallible
-    fn lp_number(gpio: u8) -> Option<u8> {
-        for_each_lp_function! {
-            (($_signal:ident, LP_GPIOn, $pin:literal), $gpio:ident, $_af:ident, $_lp_in:tt $_lp_out:tt) => {
-                if gpio == crate::peripherals::$gpio::NUMBER {
-                    return Some($pin);
-                }
-            };
-        }
-
-        None
-    }
 
     impl<'d> crate::gpio::Input<'d> {
         /// Hands the pin over to the low-power core.
@@ -225,7 +218,7 @@ mod ulp_tokens {
         ///
         /// # Errors
         ///
-        /// Returns the driver unchanged if the pad is not the low-power pin numbered `PIN`.
+        /// The original driver when the pad is not the low-power pin numbered `PIN`.
         #[instability::unstable]
         pub fn into_lp<const PIN: u8>(self) -> Result<LowPowerInput<'d, PIN>, Self> {
             if lp_number(self.pin.pin.number()) != Some(PIN) {
@@ -244,7 +237,7 @@ mod ulp_tokens {
         ///
         /// # Errors
         ///
-        /// Returns the driver unchanged if the pad is not the low-power pin numbered `PIN`.
+        /// The original driver when the pad is not the low-power pin numbered `PIN`.
         #[instability::unstable]
         pub fn into_lp<const PIN: u8>(self) -> Result<LowPowerOutput<'d, PIN>, Self> {
             if lp_number(self.pin.pin.number()) != Some(PIN) {
@@ -261,7 +254,7 @@ mod ulp_tokens {
         ///
         /// # Errors
         ///
-        /// Returns the driver unchanged if the pad is not the low-power pin numbered `PIN`.
+        /// The original driver when the pad is not the low-power pin numbered `PIN`.
         #[instability::unstable]
         pub fn into_open_drain_lp<const PIN: u8>(
             self,

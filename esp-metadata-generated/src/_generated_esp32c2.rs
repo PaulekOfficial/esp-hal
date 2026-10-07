@@ -1103,15 +1103,6 @@ macro_rules! for_each_sw_interrupt {
 ///         todo!()
 ///     }
 ///
-///     fn configure_mem_clock_impl(
-///         self,
-///         _clocks: &mut ClockTree,
-///         _old_config: Option<UartMemClockConfig>,
-///         _new_config: UartMemClockConfig,
-///     ) {
-///         todo!()
-///     }
-///
 ///     // UART_BAUD_RATE_GENERATOR
 ///
 ///     fn enable_baud_rate_generator_impl(self, _clocks: &mut ClockTree, _en: bool) {
@@ -1397,9 +1388,9 @@ macro_rules! define_clock_tree_types {
         #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         pub enum SpiFunctionClockConfig {
-            #[default]
             /// Selects `XTAL_CLK`.
             Xtal,
+            #[default]
             /// Selects `PLL_40M`.
             Pll40m,
         }
@@ -1464,18 +1455,6 @@ macro_rules! define_clock_tree_types {
                 self.div_num as u32
             }
         }
-        /// Configures the `UART0_MEM_CLOCK` clock node.
-        ///
-        /// The output is calculated as `OUTPUT = UART_MEM_CLK`.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-        pub struct UartMemClockConfig {}
-        impl UartMemClockConfig {
-            /// Creates a new configuration for the MEM_CLOCK clock node.
-            pub const fn new() -> Self {
-                Self {}
-            }
-        }
         /// Configures the `UART0_BAUD_RATE_GENERATOR` clock node.
         ///
         /// The output is calculated as `OUTPUT = (FUNCTION_CLOCK * 16) / (integral * 16 +
@@ -1537,7 +1516,6 @@ macro_rules! define_clock_tree_types {
             timg_function_clock: [Option<TimgFunctionClockConfig>; 1],
             timg_wdt_clock: [Option<TimgWdtClockConfig>; 1],
             uart_function_clock: [Option<UartFunctionClockConfig>; 2],
-            uart_mem_clock: [Option<UartMemClockConfig>; 2],
             uart_baud_rate_generator: [Option<UartBaudRateGeneratorConfig>; 2],
             rc_fast_clk_refcount: u32,
             osc_slow_clk_refcount: u32,
@@ -1637,10 +1615,6 @@ macro_rules! define_clock_tree_types {
             pub fn uart0_function_clock(&self) -> Option<UartFunctionClockConfig> {
                 self.uart_function_clock[UartInstance::Uart0 as usize]
             }
-            /// Returns the current configuration of the UART0_MEM_CLOCK clock tree node
-            pub fn uart0_mem_clock(&self) -> Option<UartMemClockConfig> {
-                self.uart_mem_clock[UartInstance::Uart0 as usize]
-            }
             /// Returns the current configuration of the UART0_BAUD_RATE_GENERATOR clock tree node
             pub fn uart0_baud_rate_generator(&self) -> Option<UartBaudRateGeneratorConfig> {
                 self.uart_baud_rate_generator[UartInstance::Uart0 as usize]
@@ -1648,10 +1622,6 @@ macro_rules! define_clock_tree_types {
             /// Returns the current configuration of the UART1_FUNCTION_CLOCK clock tree node
             pub fn uart1_function_clock(&self) -> Option<UartFunctionClockConfig> {
                 self.uart_function_clock[UartInstance::Uart1 as usize]
-            }
-            /// Returns the current configuration of the UART1_MEM_CLOCK clock tree node
-            pub fn uart1_mem_clock(&self) -> Option<UartMemClockConfig> {
-                self.uart_mem_clock[UartInstance::Uart1 as usize]
             }
             /// Returns the current configuration of the UART1_BAUD_RATE_GENERATOR clock tree node
             pub fn uart1_baud_rate_generator(&self) -> Option<UartBaudRateGeneratorConfig> {
@@ -1678,7 +1648,6 @@ macro_rules! define_clock_tree_types {
                 timg_function_clock: [None; 1],
                 timg_wdt_clock: [None; 1],
                 uart_function_clock: [None; 2],
-                uart_mem_clock: [None; 2],
                 uart_baud_rate_generator: [None; 2],
                 rc_fast_clk_refcount: 0,
                 osc_slow_clk_refcount: 0,
@@ -3014,14 +2983,6 @@ macro_rules! define_clock_tree_types {
                     UartFunctionClockSclk::Xtal => xtal_clk_frequency(),
                 }
             }
-            pub fn configure_mem_clock(self, clocks: &mut ClockTree, config: UartMemClockConfig) {
-                let old_config = clocks.uart_mem_clock[self as usize].replace(config);
-                refresh_uart_mem_clock_downstream(clocks, self);
-                self.configure_mem_clock_impl(clocks, old_config, config);
-            }
-            pub fn mem_clock_config(self, clocks: &mut ClockTree) -> Option<UartMemClockConfig> {
-                clocks.uart_mem_clock[self as usize]
-            }
             pub fn request_mem_clock(self, clocks: &mut ClockTree) {
                 trace!("Requesting {:?}::MEM_CLOCK", self);
                 if increment_reference_count(&mut clocks.uart_mem_clock_refcount[self as usize]) {
@@ -3037,13 +2998,6 @@ macro_rules! define_clock_tree_types {
                     self.enable_mem_clock_impl(clocks, false);
                     release_uart_mem_clk(clocks);
                 }
-            }
-            #[allow(unused_variables)]
-            pub fn mem_clock_config_frequency(
-                clocks: &mut ClockTree,
-                config: UartMemClockConfig,
-            ) -> u32 {
-                uart_mem_clk_frequency()
             }
             pub fn mem_clock_frequency(self) -> u32 {
                 uart_mem_clk_frequency()
@@ -3194,7 +3148,6 @@ macro_rules! define_clock_tree_types {
             }
             for child_instance in [UartInstance::Uart0, UartInstance::Uart1] {
                 refresh_uart_function_clock_downstream(clocks, child_instance);
-                refresh_uart_mem_clock_downstream(clocks, child_instance);
             }
         }
         fn refresh_system_pre_div_in_downstream(clocks: &mut ClockTree) {
@@ -3328,7 +3281,6 @@ macro_rules! define_clock_tree_types {
             }
             refresh_uart_baud_rate_generator_downstream(clocks, instance);
         }
-        fn refresh_uart_mem_clock_downstream(clocks: &mut ClockTree, instance: UartInstance) {}
         fn refresh_uart_baud_rate_generator_downstream(
             clocks: &mut ClockTree,
             instance: UartInstance,
@@ -3897,22 +3849,28 @@ macro_rules! for_each_peripheral {
         _for_each_inner_peripheral!((@ peri_type #[doc = "FLASH peripheral singleton"]
         FLASH <= virtual() (unstable))); _for_each_inner_peripheral!((@ peri_type #[doc =
         "GPIO_DEDICATED peripheral singleton"] GPIO_DEDICATED <= virtual() (unstable)));
-        _for_each_inner_peripheral!((@ peri_type #[doc =
-        "SW_INTERRUPT peripheral singleton"] SW_INTERRUPT <= virtual() (unstable)));
         _for_each_inner_peripheral!((@ peri_type #[doc = "WIFI peripheral singleton"]
         WIFI <= virtual(WIFI_MAC : { bind_mac_interrupt, enable_mac_interrupt,
         disable_mac_interrupt }, WIFI_PWR : { bind_pwr_interrupt, enable_pwr_interrupt,
-        disable_pwr_interrupt }))); _for_each_inner_peripheral!((GPIO0));
-        _for_each_inner_peripheral!((GPIO1)); _for_each_inner_peripheral!((GPIO2));
-        _for_each_inner_peripheral!((GPIO3)); _for_each_inner_peripheral!((GPIO4));
-        _for_each_inner_peripheral!((GPIO5)); _for_each_inner_peripheral!((GPIO6));
-        _for_each_inner_peripheral!((GPIO7)); _for_each_inner_peripheral!((GPIO8));
-        _for_each_inner_peripheral!((GPIO9)); _for_each_inner_peripheral!((GPIO10));
-        _for_each_inner_peripheral!((GPIO11)); _for_each_inner_peripheral!((GPIO12));
-        _for_each_inner_peripheral!((GPIO13)); _for_each_inner_peripheral!((GPIO14));
-        _for_each_inner_peripheral!((GPIO15)); _for_each_inner_peripheral!((GPIO16));
-        _for_each_inner_peripheral!((GPIO17)); _for_each_inner_peripheral!((GPIO18));
-        _for_each_inner_peripheral!((GPIO19)); _for_each_inner_peripheral!((GPIO20));
+        disable_pwr_interrupt }))); _for_each_inner_peripheral!((@ peri_type #[doc =
+        "FROM_CPU_INTR0 peripheral singleton"] FROM_CPU_INTR0 <= virtual() (unstable)));
+        _for_each_inner_peripheral!((@ peri_type #[doc =
+        "FROM_CPU_INTR1 peripheral singleton"] FROM_CPU_INTR1 <= virtual() (unstable)));
+        _for_each_inner_peripheral!((@ peri_type #[doc =
+        "FROM_CPU_INTR2 peripheral singleton"] FROM_CPU_INTR2 <= virtual() (unstable)));
+        _for_each_inner_peripheral!((@ peri_type #[doc =
+        "FROM_CPU_INTR3 peripheral singleton"] FROM_CPU_INTR3 <= virtual() (unstable)));
+        _for_each_inner_peripheral!((GPIO0)); _for_each_inner_peripheral!((GPIO1));
+        _for_each_inner_peripheral!((GPIO2)); _for_each_inner_peripheral!((GPIO3));
+        _for_each_inner_peripheral!((GPIO4)); _for_each_inner_peripheral!((GPIO5));
+        _for_each_inner_peripheral!((GPIO6)); _for_each_inner_peripheral!((GPIO7));
+        _for_each_inner_peripheral!((GPIO8)); _for_each_inner_peripheral!((GPIO9));
+        _for_each_inner_peripheral!((GPIO10)); _for_each_inner_peripheral!((GPIO11));
+        _for_each_inner_peripheral!((GPIO12)); _for_each_inner_peripheral!((GPIO13));
+        _for_each_inner_peripheral!((GPIO14)); _for_each_inner_peripheral!((GPIO15));
+        _for_each_inner_peripheral!((GPIO16)); _for_each_inner_peripheral!((GPIO17));
+        _for_each_inner_peripheral!((GPIO18)); _for_each_inner_peripheral!((GPIO19));
+        _for_each_inner_peripheral!((GPIO20));
         _for_each_inner_peripheral!((DMA_CH0(unstable)));
         _for_each_inner_peripheral!((APB_CTRL(unstable)));
         _for_each_inner_peripheral!((APB_SARADC(unstable)));
@@ -3945,9 +3903,13 @@ macro_rules! for_each_peripheral {
         _for_each_inner_peripheral!((BT(unstable)));
         _for_each_inner_peripheral!((FLASH(unstable)));
         _for_each_inner_peripheral!((GPIO_DEDICATED(unstable)));
-        _for_each_inner_peripheral!((SW_INTERRUPT(unstable)));
-        _for_each_inner_peripheral!((WIFI)); _for_each_inner_peripheral!((SPI2, Spi2, 0,
-        AhbGdmaChannel)); _for_each_inner_peripheral!((SHA, Sha, 7, AhbGdmaChannel));
+        _for_each_inner_peripheral!((WIFI));
+        _for_each_inner_peripheral!((FROM_CPU_INTR0(unstable)));
+        _for_each_inner_peripheral!((FROM_CPU_INTR1(unstable)));
+        _for_each_inner_peripheral!((FROM_CPU_INTR2(unstable)));
+        _for_each_inner_peripheral!((FROM_CPU_INTR3(unstable)));
+        _for_each_inner_peripheral!((SPI2, Spi2, 0, AhbGdmaChannel));
+        _for_each_inner_peripheral!((SHA, Sha, 7, AhbGdmaChannel));
         _for_each_inner_peripheral!((all(@ peri_type #[doc =
         "GPIO0 peripheral singleton"] GPIO0 <= virtual()), (@ peri_type #[doc =
         "GPIO1 peripheral singleton"] GPIO1 <= virtual()), (@ peri_type #[doc =
@@ -4093,23 +4055,28 @@ macro_rules! for_each_peripheral {
         (@ peri_type #[doc = "FLASH peripheral singleton"] FLASH <= virtual()
         (unstable)), (@ peri_type #[doc = "GPIO_DEDICATED peripheral singleton"]
         GPIO_DEDICATED <= virtual() (unstable)), (@ peri_type #[doc =
-        "SW_INTERRUPT peripheral singleton"] SW_INTERRUPT <= virtual() (unstable)), (@
-        peri_type #[doc = "WIFI peripheral singleton"] WIFI <= virtual(WIFI_MAC : {
-        bind_mac_interrupt, enable_mac_interrupt, disable_mac_interrupt }, WIFI_PWR : {
-        bind_pwr_interrupt, enable_pwr_interrupt, disable_pwr_interrupt }))));
-        _for_each_inner_peripheral!((singletons(GPIO0), (GPIO1), (GPIO2), (GPIO3),
-        (GPIO4), (GPIO5), (GPIO6), (GPIO7), (GPIO8), (GPIO9), (GPIO10), (GPIO11),
-        (GPIO12), (GPIO13), (GPIO14), (GPIO15), (GPIO16), (GPIO17), (GPIO18), (GPIO19),
-        (GPIO20), (DMA_CH0(unstable)), (APB_CTRL(unstable)), (APB_SARADC(unstable)),
-        (BB(unstable)), (ASSIST_DEBUG(unstable)), (DMA(unstable)), (ECC(unstable)),
-        (EXTMEM(unstable)), (GPIO(unstable)), (I2C_ANA_MST(unstable)), (I2C0),
-        (INTERRUPT_CORE0(unstable)), (IO_MUX(unstable)), (LEDC(unstable)),
-        (RNG(unstable)), (LPWR(unstable)), (RTC_TIMER(unstable)),
+        "WIFI peripheral singleton"] WIFI <= virtual(WIFI_MAC : { bind_mac_interrupt,
+        enable_mac_interrupt, disable_mac_interrupt }, WIFI_PWR : { bind_pwr_interrupt,
+        enable_pwr_interrupt, disable_pwr_interrupt })), (@ peri_type #[doc =
+        "FROM_CPU_INTR0 peripheral singleton"] FROM_CPU_INTR0 <= virtual() (unstable)),
+        (@ peri_type #[doc = "FROM_CPU_INTR1 peripheral singleton"] FROM_CPU_INTR1 <=
+        virtual() (unstable)), (@ peri_type #[doc =
+        "FROM_CPU_INTR2 peripheral singleton"] FROM_CPU_INTR2 <= virtual() (unstable)),
+        (@ peri_type #[doc = "FROM_CPU_INTR3 peripheral singleton"] FROM_CPU_INTR3 <=
+        virtual() (unstable)))); _for_each_inner_peripheral!((singletons(GPIO0), (GPIO1),
+        (GPIO2), (GPIO3), (GPIO4), (GPIO5), (GPIO6), (GPIO7), (GPIO8), (GPIO9), (GPIO10),
+        (GPIO11), (GPIO12), (GPIO13), (GPIO14), (GPIO15), (GPIO16), (GPIO17), (GPIO18),
+        (GPIO19), (GPIO20), (DMA_CH0(unstable)), (APB_CTRL(unstable)),
+        (APB_SARADC(unstable)), (BB(unstable)), (ASSIST_DEBUG(unstable)),
+        (DMA(unstable)), (ECC(unstable)), (EXTMEM(unstable)), (GPIO(unstable)),
+        (I2C_ANA_MST(unstable)), (I2C0), (INTERRUPT_CORE0(unstable)), (IO_MUX(unstable)),
+        (LEDC(unstable)), (RNG(unstable)), (LPWR(unstable)), (RTC_TIMER(unstable)),
         (MODEM_CLKRST(unstable)), (SENSITIVE(unstable)), (SHA(unstable)),
         (SPI0(unstable)), (SPI1(unstable)), (SPI2), (SYSTEM(unstable)),
         (SYSTIMER(unstable)), (TIMG0(unstable)), (UART0), (UART1), (XTS_AES(unstable)),
         (ADC1(unstable)), (BT(unstable)), (FLASH(unstable)), (GPIO_DEDICATED(unstable)),
-        (SW_INTERRUPT(unstable)), (WIFI)));
+        (WIFI), (FROM_CPU_INTR0(unstable)), (FROM_CPU_INTR1(unstable)),
+        (FROM_CPU_INTR2(unstable)), (FROM_CPU_INTR3(unstable))));
         _for_each_inner_peripheral!((dma_eligible(SPI2, Spi2, 0, AhbGdmaChannel), (SHA,
         Sha, 7, AhbGdmaChannel)));
     };
@@ -4359,6 +4326,116 @@ macro_rules! for_each_iomux_function {
         (U0RXD, GPIO19, _0), (U0TXD, GPIO20, _0)));
         _for_each_inner_iomux_function!((FSPICSn((FSPICS0, FSPICSn, 0), GPIO10, _2)));
         _for_each_inner_iomux_function!((SPICSn((SPICS0, SPICSn, 0), GPIO14, _0)));
+    };
+}
+/// Returns the name of the GPIO that provides the given signal, as a string.
+///
+/// The macro takes the name of a direct function - a digital IO MUX function, an analog
+/// function, or an LP IO MUX function - and expands to a string literal like `"GPIO4"`. It
+/// is meant to keep documentation free of per-chip pin lists.
+///
+/// Signals that are not wired to a pad on this chip have to be routed through the GPIO
+/// matrix, which can reach any pad. The macro has no pad to return for those, so it accepts
+/// an optional fallback to expand to instead. The fallback is not validated.
+///
+/// If multiple pads provide the signal, the macro returns one that is not reserved for some
+/// other purpose, such as booting or interfacing with flash.
+///
+/// Example usage:
+/// - `gpio_for_signal!(ADC1_CH0)`
+/// - `gpio_for_signal!(LP_I2C_SDA, "GPIO6")`
+#[macro_export]
+#[cfg_attr(docsrs, doc(cfg(feature = "_device-selected")))]
+macro_rules! gpio_for_signal {
+    (ADC1_CH0 $(, $_fallback:literal)?) => {
+        "GPIO0"
+    };
+    (LP_GPIO0 $(, $_fallback:literal)?) => {
+        "GPIO0"
+    };
+    (ADC1_CH1 $(, $_fallback:literal)?) => {
+        "GPIO1"
+    };
+    (LP_GPIO1 $(, $_fallback:literal)?) => {
+        "GPIO1"
+    };
+    (FSPIQ $(, $_fallback:literal)?) => {
+        "GPIO2"
+    };
+    (ADC1_CH2 $(, $_fallback:literal)?) => {
+        "GPIO2"
+    };
+    (LP_GPIO2 $(, $_fallback:literal)?) => {
+        "GPIO2"
+    };
+    (ADC1_CH3 $(, $_fallback:literal)?) => {
+        "GPIO3"
+    };
+    (LP_GPIO3 $(, $_fallback:literal)?) => {
+        "GPIO3"
+    };
+    (MTMS $(, $_fallback:literal)?) => {
+        "GPIO4"
+    };
+    (FSPIHD $(, $_fallback:literal)?) => {
+        "GPIO4"
+    };
+    (ADC1_CH4 $(, $_fallback:literal)?) => {
+        "GPIO4"
+    };
+    (LP_GPIO4 $(, $_fallback:literal)?) => {
+        "GPIO4"
+    };
+    (MTDI $(, $_fallback:literal)?) => {
+        "GPIO5"
+    };
+    (FSPIWP $(, $_fallback:literal)?) => {
+        "GPIO5"
+    };
+    (LP_GPIO5 $(, $_fallback:literal)?) => {
+        "GPIO5"
+    };
+    (MTCK $(, $_fallback:literal)?) => {
+        "GPIO6"
+    };
+    (FSPICLK $(, $_fallback:literal)?) => {
+        "GPIO6"
+    };
+    (MTDO $(, $_fallback:literal)?) => {
+        "GPIO7"
+    };
+    (FSPID $(, $_fallback:literal)?) => {
+        "GPIO7"
+    };
+    (FSPICS0 $(, $_fallback:literal)?) => {
+        "GPIO10"
+    };
+    (SPIHD $(, $_fallback:literal)?) => {
+        "GPIO11"
+    };
+    (SPIWP $(, $_fallback:literal)?) => {
+        "GPIO13"
+    };
+    (SPICS0 $(, $_fallback:literal)?) => {
+        "GPIO14"
+    };
+    (SPICLK $(, $_fallback:literal)?) => {
+        "GPIO15"
+    };
+    (SPID $(, $_fallback:literal)?) => {
+        "GPIO16"
+    };
+    (SPIQ $(, $_fallback:literal)?) => {
+        "GPIO17"
+    };
+    (U0RXD $(, $_fallback:literal)?) => {
+        "GPIO19"
+    };
+    (U0TXD $(, $_fallback:literal)?) => {
+        "GPIO20"
+    };
+    ($_signal:ident, $fallback:literal) => {
+        $fallback
     };
 }
 /// Defines the `InputSignal` and `OutputSignal` enums.

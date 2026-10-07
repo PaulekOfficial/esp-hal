@@ -418,6 +418,8 @@ struct Device {
     cores: usize,
     datasheet: String,
     trm: String,
+    #[serde(default)]
+    support_note: String,
 
     // Peripheral driver configuration:
     #[serde(flatten)]
@@ -470,6 +472,7 @@ impl Config {
                 datasheet: String::new(),
                 trm: String::new(),
                 peri_config: PeriConfig::default(),
+                support_note: String::new(),
             },
             all_symbols: OnceLock::new(),
         }
@@ -781,7 +784,16 @@ This pin may be available with certain limitations. Check your hardware to make 
                     #(#[doc = #docs])* #pin <= virtual ()
                 };
                 all_peripherals.push(quote! { @peri_type #tokens });
-                singleton_peripherals.push(quote! { #pin });
+
+                // The pin type is always defined - drivers and the `for_each_gpio` family of
+                // macros refer to it unconditionally. Only the `Peripherals` field is hidden, so
+                // that an application cannot safely take a pin the crystal is driving.
+                let cfg = if gpio.is_xtal32k() {
+                    quote! { #[cfg(not(use_xtal32k))] }
+                } else {
+                    quote! {}
+                };
+                singleton_peripherals.push(stable_singleton(&cfg, &pin));
             }
         }
 
@@ -819,8 +831,22 @@ This pin may be available with certain limitations. Check your hardware to make 
                         #[doc = #singleton_doc] #ch_name <= #pac ( #(#interrupts),* )
                     };
                     all_peripherals.push(quote! { @peri_type #tokens (unstable) });
-                    singleton_peripherals.push(quote! { #ch_name (unstable) });
+                    singleton_peripherals.push(unstable_singleton(&quote! {}, &ch_name));
                 }
+            }
+        }
+
+        if let Some(sdm) = self.device.peri_config.sdm.as_ref()
+            && sdm.support_status.is_supported()
+        {
+            for channel in 0..sdm.channel_count.count {
+                let ch_name = format_ident!("SDM_CH{channel}");
+                let singleton_doc = format!("SDM_CH{channel} peripheral singleton");
+                let tokens = quote! {
+                    #[doc = #singleton_doc] #ch_name <= virtual ()
+                };
+                all_peripherals.push(quote! { @peri_type #tokens (unstable) });
+                singleton_peripherals.push(unstable_singleton(&quote! {}, &ch_name));
             }
         }
 
@@ -851,12 +877,12 @@ This pin may be available with certain limitations. Check your hardware to make 
             {
                 all_peripherals.push(quote! { @peri_type #tokens });
                 if !peri.hidden {
-                    singleton_peripherals.push(quote! { #hal });
+                    singleton_peripherals.push(stable_singleton(&quote! {}, &hal));
                 }
             } else {
                 all_peripherals.push(quote! { @peri_type #tokens (unstable) });
                 if !peri.hidden {
-                    singleton_peripherals.push(quote! { #hal (unstable) });
+                    singleton_peripherals.push(unstable_singleton(&quote! {}, &hal));
                 }
             }
         }
@@ -924,6 +950,17 @@ This pin may be available with certain limitations. Check your hardware to make 
             .map(|cfg| format!("cargo:rustc-cfg={cfg}"))
             .collect()
     }
+}
+
+// A stable entry of the `singletons` branch of `for_each_peripheral!`.
+fn stable_singleton(cfg: &TokenStream, name: &proc_macro2::Ident) -> TokenStream {
+    quote! { #cfg #name }
+}
+
+// An unstable entry of the `singletons` branch of `for_each_peripheral!`.
+// `cfg` is repeated due to a rust limitation.
+fn unstable_singleton(cfg: &TokenStream, name: &proc_macro2::Ident) -> TokenStream {
+    quote! { #cfg #name (unstable #cfg) }
 }
 
 type Branch<'a> = (&'a str, &'a [TokenStream]);
@@ -1587,22 +1624,17 @@ fn write_support_table(
 }
 
 pub fn generate_supported_devices_table(output: &mut impl Write) -> std::fmt::Result {
-    writeln!(
-        output,
-        "| Chip | Datasheet | Technical Reference Manual | Target |"
-    )?;
-    writeln!(
-        output,
-        "| :---: | :-------: | :------------------------: | :----: |"
-    )?;
+    writeln!(output, "| Chip  | Documentation | Target | Note  |")?;
+    writeln!(output, "| :---: | :-----------: | :----: | :---: |")?;
 
     for chip in Chip::iter() {
         let config = Config::for_chip(&chip);
         writeln!(
             output,
-            "| {pretty} | [{pretty}][{chip}-datasheet] | [{pretty}][{chip}-trm] | `{target}` |",
+            "| {pretty} | [Datasheet][{chip}-datasheet] [TRM][{chip}-trm] | `{target}` | {note} |",
             pretty = chip.pretty_name(),
             target = config.device.target,
+            note = config.device.support_note,
         )?;
     }
 
@@ -1610,8 +1642,8 @@ pub fn generate_supported_devices_table(output: &mut impl Write) -> std::fmt::Re
 
     for chip in Chip::iter() {
         let config = Config::for_chip(&chip);
-        writeln!(output, "[{chip}-datasheet]: {}", config.device.datasheet,)?;
-        writeln!(output, "[{chip}-trm]: {}", config.device.trm,)?;
+        writeln!(output, "[{chip}-datasheet]: {}", config.device.datasheet)?;
+        writeln!(output, "[{chip}-trm]: {}", config.device.trm)?;
     }
 
     Ok(())

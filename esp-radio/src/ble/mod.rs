@@ -1,6 +1,4 @@
 //! Bluetooth Low Energy HCI interface
-//!
-//! The usage of BLE is currently incompatible with the usage of IEEE 802.15.4.
 
 #[cfg(bt_controller = "btdm")]
 pub(crate) mod btdm;
@@ -138,6 +136,14 @@ impl defmt::Format for ReceivedPacket {
     fn format(&self, fmt: defmt::Formatter<'_>) {
         defmt::write!(fmt, "ReceivedPacket {}", &self.data[..])
     }
+}
+
+/// Drops packets the host never read, so they don't outlive the controller.
+pub(crate) fn clear_bt_state() {
+    BT_STATE.with(|state| {
+        state.rx_queue.clear();
+        state.hci_read_data.clear();
+    });
 }
 
 /// Checks if there is any HCI data available to read.

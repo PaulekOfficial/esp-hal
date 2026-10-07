@@ -41,10 +41,7 @@ use crate::{
 #[cfg_attr(uart_version = "2", path = "v2.rs")]
 mod version;
 
-#[inline(always)]
-pub(super) fn sync_regs(register_block: &RegisterBlock) {
-    version::sync_regs(register_block);
-}
+pub(super) use version::{enable_register_sync, sync_regs};
 
 #[derive(Debug, EnumSetType)]
 pub(super) enum TxEvent {
@@ -255,7 +252,7 @@ pub trait Instance: crate::private::Sealed + any::Degrade {
 pub struct Info {
     /// Pointer to the register block for this UART instance.
     ///
-    /// Use [Self::register_block] to access the register block.
+    /// Used with [`Self::register_block`] to access the register block.
     pub register_block: *const RegisterBlock,
 
     /// The system peripheral marker.
@@ -313,7 +310,7 @@ impl Info {
         unsafe { &*self.register_block }
     }
 
-    /// Listen for the given interrupts
+    /// Listens for the given interrupts.
     pub(super) fn enable_listen(&self, interrupts: EnumSet<UartInterrupt>, enable: bool) {
         let reg_block = self.regs();
 
@@ -497,9 +494,9 @@ impl Info {
         });
     }
 
-    /// Configures the RX-FIFO threshold
+    /// Configures the RX-FIFO threshold.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// [`ConfigError::RxFifoThresholdNotSupported`] if the provided value is zero
     /// or exceeds [`Info::RX_FIFO_MAX_THRHD`].
@@ -515,15 +512,15 @@ impl Info {
         Ok(())
     }
 
-    /// Reads the RX-FIFO threshold
+    /// Reads the RX-FIFO threshold.
     #[allow(clippy::useless_conversion)]
     pub(super) fn rx_fifo_full_threshold(&self) -> u16 {
         self.regs().conf1().read().rxfifo_full_thrhd().bits().into()
     }
 
-    /// Configures the TX-FIFO threshold
+    /// Configures the TX-FIFO threshold.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// [`ConfigError::TxFifoThresholdNotSupported`] if the provided value exceeds
     /// [`Info::TX_FIFO_MAX_THRHD`].
@@ -552,14 +549,14 @@ impl Info {
             _ => "- The value you pass times the symbol size must be <= **0x3FF**.",
         }
     )]
-    /// Configures the Receive Timeout detection setting
+    /// Configures the Receive Timeout detection setting.
     ///
     /// ## Arguments
     ///
     /// `timeout` - the number of symbols ("bytes") to wait for before
     /// triggering a timeout. Pass None to disable the timeout.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// [`ConfigError::TimeoutTooLong`] if the provided value exceeds
     /// the maximum value for SOC:
@@ -711,6 +708,9 @@ impl Info {
 
         txfifo_rst(self.regs(), true);
         txfifo_rst(self.regs(), false);
+
+        // The reset can drive the state machine. Wait for it to settle.
+        while !self.is_tx_idle() {}
     }
 
     pub(super) fn current_symbol_length(&self) -> u8 {
@@ -944,16 +944,24 @@ pub(super) struct UartClockGuard<'t> {
 
 impl<'t> UartClockGuard<'t> {
     pub(super) fn new(uart: AnyUart<'t>) -> Self {
+        let this = Self::new_inner(uart, false);
+        crate::rom::ets_delay_us(100);
+        this
+    }
+
+    pub(super) fn new_inner(uart: AnyUart<'t>, clone: bool) -> Self {
         ClockTree::with(|clocks| {
             let clock = uart.info().clock_instance;
 
-            // Apply default SCLK configuration
-            let sclk_config = ClockConfig::new(
-                Default::default(),
-                #[cfg(any(uart_has_sclk_divider, soc_has_pcr, esp32p4, esp32s31))]
-                0,
-            );
-            clock.configure_function_clock(clocks, sclk_config);
+            // Apply default SCLK configuration when first instance is created.
+            if !clone {
+                let sclk_config = ClockConfig::new(
+                    Default::default(),
+                    #[cfg(any(uart_has_sclk_divider, soc_has_pcr, esp32p4, esp32s31))]
+                    0,
+                );
+                clock.configure_function_clock(clocks, sclk_config);
+            }
             clock.request_function_clock(clocks);
             clock.request_baud_rate_generator(clocks);
             #[cfg(soc_has_clock_node_uart_mem_clock)]
@@ -966,7 +974,7 @@ impl<'t> UartClockGuard<'t> {
 
 impl Clone for UartClockGuard<'_> {
     fn clone(&self) -> Self {
-        Self::new(unsafe { self.uart.clone_unchecked() })
+        Self::new_inner(unsafe { self.uart.clone_unchecked() }, true)
     }
 }
 

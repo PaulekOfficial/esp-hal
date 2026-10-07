@@ -17,7 +17,6 @@ use crate::{
 };
 
 /// Additional properties (besides those defined in cfg.rs) for [device.gpio].
-/// These don't get turned into symbols, but are used to generate code.
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GpioPinsAndSignals {
@@ -31,7 +30,14 @@ pub(crate) struct GpioPinsAndSignals {
     pub output_signals: Vec<IoMuxSignal>,
 }
 
-impl GenericProperty for GpioPinsAndSignals {}
+impl GenericProperty for GpioPinsAndSignals {
+    fn cfgs(&self) -> Option<Vec<String>> {
+        self.pins
+            .iter()
+            .any(|p| p.is_xtal32k())
+            .then(|| vec!["soc_has_xtal32k_pads".to_string()])
+    }
+}
 
 /// Possible special cases that may affect pin availability or functionality.
 ///
@@ -148,6 +154,13 @@ pub(crate) struct PinConfig {
 }
 
 impl PinConfig {
+    /// Returns `true` if this pin is wired to one of the 32 kHz crystal (XTAL32K) pads.
+    pub(crate) fn is_xtal32k(&self) -> bool {
+        (0..AnalogMap::COUNT)
+            .filter_map(|af| self.analog.get(af))
+            .any(|signal| matches!(signal, "XTAL_32K_P" | "XTAL_32K_N"))
+    }
+
     pub(crate) fn limitations(&self) -> Vec<PinLimitation> {
         let mut limitations = self.limitations.clone();
 
@@ -663,6 +676,8 @@ pub(crate) fn generate_gpios(
 
     let lp_functions_enum = render_lp_functions(gpio);
 
+    let gpio_for_signal = render_gpio_for_signal(gpio);
+
     quote! {
         /// This macro can be used to generate code for each `GPIOn` instance.
         ///
@@ -772,6 +787,8 @@ pub(crate) fn generate_gpios(
         /// The expanded syntax is only available when the signal has at least one numbered component.
         #for_each_iomux
 
+        #gpio_for_signal
+
         /// Defines the `InputSignal` and `OutputSignal` enums.
         ///
         /// This macro is intended to be called in esp-hal only.
@@ -817,6 +834,76 @@ pub(crate) fn generate_gpios(
             () => {
                 #io_mux_accessor
             };
+        }
+    }
+}
+
+/// Picks the pad to advertise out of the pads that can carry a signal.
+///
+/// Pads are expected in ascending pin number order. Pads that need special attention are only
+/// picked if there is no alternative.
+fn preferred_pad<'a>(mut candidates: impl Iterator<Item = &'a PinConfig>) -> Option<&'a PinConfig> {
+    let first = candidates.next()?;
+    if first.limitations().is_empty() {
+        return Some(first);
+    }
+
+    let unrestricted = candidates.find(|pin| pin.limitations().is_empty());
+
+    Some(unrestricted.unwrap_or(first))
+}
+
+/// Renders `gpio_for_signal!`, which maps direct functions to the name of the pad that provides
+/// them.
+fn render_gpio_for_signal(gpio: &super::GpioProperties) -> TokenStream {
+    let pins = &gpio.pins_and_signals.pins;
+
+    // Collect the pads that provide each direct function. Digital, analog and LP functions share a
+    // namespace here: a signal is either wired to a pad, or it is not.
+    let mut candidates: IndexMap<&str, Vec<&PinConfig>> = IndexMap::new();
+    for pin in pins.iter() {
+        let digital = (0..FunctionMap::COUNT).filter_map(|af| pin.functions.get(af));
+        let analog = (0..AnalogMap::COUNT).filter_map(|af| pin.analog.get(af));
+        let low_power = (0..LowPowerMap::COUNT).filter_map(|af| pin.lp.get(af));
+
+        for signal in digital.chain(analog).chain(low_power) {
+            candidates.entry(signal).or_default().push(pin);
+        }
+    }
+
+    let branches = candidates.iter().filter_map(|(signal, pads)| {
+        let pad = preferred_pad(pads.iter().copied())?;
+
+        let signal = format_ident!("{signal}");
+        let gpio = format!("GPIO{}", pad.pin);
+
+        Some(quote! {
+            (#signal $(, $_fallback:literal)?) => { #gpio };
+        })
+    });
+
+    quote! {
+        /// Returns the name of the GPIO that provides the given signal, as a string.
+        ///
+        /// The macro takes the name of a direct function - a digital IO MUX function, an analog
+        /// function, or an LP IO MUX function - and expands to a string literal like `"GPIO4"`. It
+        /// is meant to keep documentation free of per-chip pin lists.
+        ///
+        /// Signals that are not wired to a pad on this chip have to be routed through the GPIO
+        /// matrix, which can reach any pad. The macro has no pad to return for those, so it accepts
+        /// an optional fallback to expand to instead. The fallback is not validated.
+        ///
+        /// If multiple pads provide the signal, the macro returns one that is not reserved for some
+        /// other purpose, such as booting or interfacing with flash.
+        ///
+        /// Example usage:
+        /// - `gpio_for_signal!(ADC1_CH0)`
+        /// - `gpio_for_signal!(LP_I2C_SDA, "GPIO6")`
+        #[macro_export]
+        #[cfg_attr(docsrs, doc(cfg(feature = "_device-selected")))]
+        macro_rules! gpio_for_signal {
+            #(#branches)*
+            ($_signal:ident, $fallback:literal) => { $fallback };
         }
     }
 }

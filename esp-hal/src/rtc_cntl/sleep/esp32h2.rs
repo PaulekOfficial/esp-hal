@@ -8,7 +8,10 @@ use crate::{
         rtc::{HpSysCntlReg, HpSysPower, LpSysPower},
         sleep::{SleepKind, pmu_common::SleepTimeConfig},
     },
-    soc::clocks::{self, ClockTree, CpuClkConfig, HpRootClkConfig, LpSlowClkConfig},
+    soc::{
+        clocks::{self, ClockTree, CpuClkConfig, HpRootClkConfig},
+        xtal32k,
+    },
 };
 
 /// Configuration for controlling the behavior during sleep modes.
@@ -138,7 +141,9 @@ impl PowerSleepConfig {
 
         self.hp_sys.xtal.set_xpd_xtal(pd_flags.pd_xtal().not());
 
-        self.lp_sys_active.clk_power.set_xpd_xtal32k(true);
+        self.lp_sys_active
+            .clk_power
+            .set_xpd_xtal32k(xtal32k::use_xtal32k());
         self.lp_sys_active.clk_power.set_xpd_fosc(true);
 
         self.lp_sys_sleep.dig_power.set_mem_dslp(true);
@@ -405,7 +410,7 @@ impl SleepTimeConfig {
 pub struct RtcSleepConfig {
     /// Deep Sleep flag
     pub deep: bool,
-    /// Power Down flags
+    /// Powers Down flags.
     pub pd_flags: PowerDownFlags,
     /// Indicates whether the top power domain should remain enabled during sleep.
     need_pd_top: bool,
@@ -426,7 +431,7 @@ impl Default for RtcSleepConfig {
 
 bitfield::bitfield! {
     #[derive(Clone, Copy)]
-    /// Power domains to be powered down during sleep
+    /// Power domains to be powered down during sleep.
     pub struct PowerDownFlags(u32);
 
     /// Controls the power-down status of the top power domain.
@@ -441,7 +446,7 @@ bitfield::bitfield! {
     pub u32, pd_xtal     , set_pd_xtal     : 4;
     /// Controls the power-down status of the fast RC oscillator.
     pub u32, pd_rc_fast  , set_pd_rc_fast  : 5;
-    /// Controls the power-down status of the 32kHz crystal oscillator.
+    /// Controls the power-down status of the 32 kHz crystal oscillator.
     pub u32, pd_xtal32k  , set_pd_xtal32k  : 6;
 }
 
@@ -492,12 +497,15 @@ impl RtcSleepConfig {
 
     /// Finalize power-down flags, apply configuration based on the flags.
     pub(crate) fn apply(&mut self) {
-        let lp_slow_uses_xtal32k = ClockTree::with(|clocks| {
-            matches!(
-                clocks::lp_slow_clk_config(clocks),
-                Some(LpSlowClkConfig::Xtal32k)
-            )
-        });
+        let lp_slow_uses_xtal32k = cfg_select! {
+            use_xtal32k => ClockTree::with(|clocks| {
+                matches!(
+                    clocks::lp_slow_clk_config(clocks),
+                    Some(clocks::LpSlowClkConfig::Xtal32k)
+                )
+            }),
+            _ => false,
+        };
 
         if self.deep {
             // force-disable certain power domains
@@ -612,7 +620,7 @@ impl RtcSleepConfig {
         restore_clock_config
     }
 
-    /// Cleans up after sleep
+    /// Cleans up after sleep.
     pub(crate) fn finish_sleep(&self) {
         // The post-wake hook of the GPIO driver releases the pads that the sleep armed. Only that
         // driver knows which pads it prepared.

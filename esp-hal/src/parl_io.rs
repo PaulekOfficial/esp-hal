@@ -35,7 +35,7 @@
 //! );
 //! let mut rx_clk_pin = NoPin;
 //!
-//! // Set up Parallel IO for 1MHz data input, with DMA and bit packing
+//! // Set up Parallel IO for 1 MHz data input, with DMA and bit packing
 //! //  configuration
 //! let parl_io = ParlIo::new(peripherals.PARL_IO, dma_channel)?;
 //!
@@ -81,7 +81,7 @@
 //!
 //! let mut pin_conf = TxPinConfigWithValidPin::new(tx_pins, peripherals.GPIO5);
 //!
-//! // Set up Parallel IO for 1MHz data input, with DMA and bit packing
+//! // Set up Parallel IO for 1 MHz data input, with DMA and bit packing
 //! //  configuration
 //!  let parl_io = ParlIo::new(
 //!     peripherals.PARL_IO,
@@ -206,13 +206,13 @@ pub enum BitPackOrder {
 }
 
 #[cfg(parl_io_version = "1")]
-/// Enable Mode
+/// Enables Mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum EnableMode {
-    /// Enable at high level
+    /// Enables at high level.
     HighLevel,
-    /// Enable at low level
+    /// Enables at low level.
     LowLevel,
     /// Positive pulse start (data bit included) & Positive pulse end (data bit
     /// included)
@@ -286,11 +286,11 @@ impl EnableMode {
 }
 
 #[cfg(parl_io_version = "2")]
-/// Enable Mode
+/// Enables Mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum EnableMode {
-    /// Enable at high level
+    /// Enables at high level.
     HighLevel,
     /// Positive pulse start (data bit included) & Positive pulse end (data bit
     /// included)
@@ -421,6 +421,49 @@ impl core::fmt::Display for ConfigError {
     }
 }
 
+/// PCR value that selects the clock from the GPIO pad.
+const PCR_PAD_CLK_SEL: u8 = 3;
+
+fn apply_clock_divider(is_tx: bool, frequency: Rate) -> Result<(), ConfigError> {
+    let pcr = PCR::regs();
+    let using_pad_clock = if is_tx {
+        pcr.parl_clk_tx_conf().read().parl_clk_tx_sel().bits() == PCR_PAD_CLK_SEL
+    } else {
+        pcr.parl_clk_rx_conf().read().parl_clk_rx_sel().bits() == PCR_PAD_CLK_SEL
+    };
+
+    if using_pad_clock {
+        // The GPIO pad supplies the unit clock. `TxConfig`/`RxConfig` frequency is the
+        // internal divider target and must not be applied to the pad clock.
+        return Ok(());
+    }
+
+    if frequency.as_hz() > 40_000_000 {
+        return Err(ConfigError::UnreachableClockRate);
+    }
+
+    let source_hz = if is_tx {
+        ParlIoInstance::ParlIo.tx_clock_frequency()
+    } else {
+        ParlIoInstance::ParlIo.rx_clock_frequency()
+    };
+    let divider = source_hz / frequency.as_hz();
+    if divider > 0xFFFF {
+        return Err(ConfigError::UnreachableClockRate);
+    }
+    let divider = divider as u16;
+
+    if is_tx {
+        pcr.parl_clk_tx_conf()
+            .modify(|_, w| unsafe { w.parl_clk_tx_div_num().bits(divider) });
+    } else {
+        pcr.parl_clk_rx_conf()
+            .modify(|_, w| unsafe { w.parl_clk_rx_div_num().bits(divider) });
+    }
+
+    Ok(())
+}
+
 /// Used to configure no pin as clock output
 impl TxClkPin for NoPin {
     fn configure(&mut self) {
@@ -433,12 +476,12 @@ impl RxClkPin for NoPin {
     }
 }
 
-/// Wraps a GPIO pin which will be used as the clock output signal
+/// Wraps a GPIO pin which will be used as the clock output signal.
 pub struct ClkOutPin<'d> {
     pin: interconnect::OutputSignal<'d>,
 }
 impl<'d> ClkOutPin<'d> {
-    /// Create a ClkOutPin
+    /// Creates a new [`ClkOutPin`].
     pub fn new(pin: impl PeripheralOutput<'d>) -> Self {
         Self { pin: pin.into() }
     }
@@ -452,12 +495,12 @@ impl TxClkPin for ClkOutPin<'_> {
     }
 }
 
-/// Wraps a GPIO pin which will be used as the TX clock input signal
+/// Wraps a GPIO pin which will be used as the TX clock input signal.
 pub struct ClkInPin<'d> {
     pin: interconnect::InputSignal<'d>,
 }
 impl<'d> ClkInPin<'d> {
-    /// Create a new ClkInPin
+    /// Creates a new [`ClkInPin`].
     pub fn new(pin: impl PeripheralInput<'d>) -> Self {
         Self { pin: pin.into() }
     }
@@ -474,13 +517,13 @@ impl TxClkPin for ClkInPin<'_> {
     }
 }
 
-/// Wraps a GPIO pin which will be used as the RX clock input signal
+/// Wraps a GPIO pin which will be used as the RX clock input signal.
 pub struct RxClkInPin<'d> {
     pin: interconnect::InputSignal<'d>,
     sample_edge: SampleEdge,
 }
 impl<'d> RxClkInPin<'d> {
-    /// Create a new RxClkInPin
+    /// Creates a new [`RxClkInPin`].
     pub fn new(pin: impl PeripheralInput<'d>, sample_edge: SampleEdge) -> Self {
         Self {
             pin: pin.into(),
@@ -516,7 +559,7 @@ impl<'d, P> TxPinConfigWithValidPin<'d, P>
 where
     P: NotContainsValidSignalPin + TxPins + ConfigurePins + 'd,
 {
-    /// Create a [TxPinConfigWithValidPin]
+    /// Creates a new [`TxPinConfigWithValidPin`].
     pub fn new(tx_pins: P, valid_pin: impl PeripheralOutput<'d>) -> Self {
         Self {
             tx_pins,
@@ -573,7 +616,7 @@ impl<P> TxPinConfigIncludingValidPin<P>
 where
     P: ContainsValidSignalPin + TxPins + ConfigurePins,
 {
-    /// Create a new [TxPinConfigIncludingValidPin]
+    /// Creates a new [`TxPinConfigIncludingValidPin`].
     pub fn new(tx_pins: P) -> Self {
         Self { tx_pins }
     }
@@ -608,7 +651,7 @@ macro_rules! tx_pins {
 
             impl<'d> $name<'d>
             {
-                /// Create a new TX pin
+                /// Creates a new TX pin.
                 #[allow(clippy::too_many_arguments)]
                 pub fn new(
                     $(
@@ -709,7 +752,7 @@ impl<'d, P> RxPinConfigWithValidPin<'d, P>
 where
     P: NotContainsValidSignalPin + RxPins + ConfigurePins,
 {
-    /// Create a new [RxPinConfigWithValidPin]
+    /// Creates a new [`RxPinConfigWithValidPin`].
     pub fn new(rx_pins: P, valid_pin: impl PeripheralInput<'d>, enable_mode: EnableMode) -> Self {
         Self {
             rx_pins,
@@ -762,7 +805,7 @@ impl<P> RxPinConfigIncludingValidPin<P>
 where
     P: ContainsValidSignalPin + RxPins + ConfigurePins,
 {
-    /// Create a new [RxPinConfigIncludingValidPin]
+    /// Creates a new [`RxPinConfigIncludingValidPin`].
     pub fn new(rx_pins: P, enable_mode: EnableMode) -> Self {
         Self {
             rx_pins,
@@ -809,7 +852,7 @@ macro_rules! rx_pins {
 
             impl<'d> $name<'d>
             {
-                /// Create a new RX pin
+                /// Creates a new RX pin.
                 #[allow(clippy::too_many_arguments)]
                 pub fn new(
                     $(
@@ -899,7 +942,7 @@ impl<'d, Dm> TxCreator<'d, Dm>
 where
     Dm: DriverMode,
 {
-    /// Configure TX to use the given pins and settings
+    /// Configures TX to use the given pins and settings.
     pub fn with_config<P, CP>(
         self,
         mut tx_pins: P,
@@ -911,12 +954,15 @@ where
         CP: TxClkPin + 'd,
     {
         tx_pins.configure();
-        clk_pin.configure();
 
         let mut this = ParlIoTx {
             tx_channel: self.tx_channel,
             _guard: ParlIoTxGuard::new(self._guard),
         };
+        // Configure the clock pin after the clock tree enables the TX clock. The guard
+        // selects an internal source. `ClkInPin` then switches the source to the GPIO
+        // pad, and that selection must remain in effect.
+        clk_pin.configure();
         this.apply_config(&config)?;
 
         Ok(this)
@@ -946,7 +992,7 @@ impl<'d, Dm> RxCreator<'d, Dm>
 where
     Dm: DriverMode,
 {
-    /// Configure RX to use the given pins and settings
+    /// Configures RX to use the given pins and settings.
     pub fn with_config<P, CP>(
         self,
         mut rx_pins: P,
@@ -961,12 +1007,15 @@ where
         Instance::set_rx_sample_mode(SampleMode::InternalSoftwareEnable);
 
         rx_pins.configure();
-        clk_pin.configure();
 
         let mut this = ParlIoRx {
             rx_channel: self.rx_channel,
             _guard: ParlIoRxGuard::new(self._guard),
         };
+        // Configure the clock pin after the clock tree enables the RX clock. The guard
+        // selects an internal source. `RxClkInPin` then switches the source to the GPIO
+        // pad, and that selection must remain in effect.
+        clk_pin.configure();
         this.apply_config(&config)?;
 
         Ok(this)
@@ -1070,7 +1119,7 @@ where
 }
 
 impl<'d> ParlIo<'d, Blocking> {
-    /// Create a new instance of [ParlIo]
+    /// Creates a new instance of [ParlIo].
     pub fn new(
         _parl_io: PARL_IO<'d>,
         dma_channel: impl ParlIoDmaChannel<'d>,
@@ -1092,7 +1141,7 @@ impl<'d> ParlIo<'d, Blocking> {
         })
     }
 
-    /// Convert to an async version.
+    /// Converts to an async version.
     pub fn into_async(self) -> ParlIo<'d, Async> {
         internal_set_interrupt_handler(interrupt_handler);
 
@@ -1109,7 +1158,7 @@ impl<'d> ParlIo<'d, Blocking> {
     }
 
     /// Sets the interrupt handler, enables it with
-    /// [crate::interrupt::Priority::min()]
+    /// [crate::interrupt::Priority::min()].
     ///
     /// Interrupts are not enabled at the peripheral level here.
     #[instability::unstable]
@@ -1117,22 +1166,22 @@ impl<'d> ParlIo<'d, Blocking> {
         internal_set_interrupt_handler(handler);
     }
 
-    /// Listen for the given interrupts
+    /// Listens for the given interrupts.
     pub fn listen(&mut self, interrupts: impl Into<EnumSet<ParlIoInterrupt>>) {
         internal_listen(interrupts.into(), true);
     }
 
-    /// Unlisten the given interrupts
+    /// Unlistens from the given interrupts.
     pub fn unlisten(&mut self, interrupts: impl Into<EnumSet<ParlIoInterrupt>>) {
         internal_listen(interrupts.into(), false);
     }
 
-    /// Gets asserted interrupts
+    /// Returns the asserted interrupts.
     pub fn interrupts(&mut self) -> EnumSet<ParlIoInterrupt> {
         internal_interrupts()
     }
 
-    /// Resets asserted interrupts
+    /// Resets asserted interrupts.
     pub fn clear_interrupts(&mut self, interrupts: EnumSet<ParlIoInterrupt>) {
         internal_clear_interrupts(interrupts);
     }
@@ -1148,7 +1197,7 @@ impl crate::interrupt::InterruptConfigurable for ParlIo<'_, Blocking> {
 }
 
 impl<'d> ParlIo<'d, Async> {
-    /// Convert to a blocking version.
+    /// Converts to a blocking version.
     pub fn into_blocking(self) -> ParlIo<'d, Blocking> {
         ParlIo {
             tx: TxCreator {
@@ -1167,9 +1216,9 @@ impl<'d, Dm> ParlIoTx<'d, Dm>
 where
     Dm: DriverMode,
 {
-    /// Perform a DMA write.
+    /// Performs a DMA write.
     ///
-    /// This will return a [ParlIoTxTransfer]
+    /// Returns a [`ParlIoTxTransfer`].
     ///
     /// The maximum amount of data to be sent is 32736 bytes.
     pub fn write<BUF>(
@@ -1214,22 +1263,9 @@ where
         })
     }
 
-    /// Change the bus configuration.
+    /// Changes the bus configuration.
     pub fn apply_config(&mut self, config: &TxConfig) -> Result<(), ConfigError> {
-        if config.frequency.as_hz() > 40_000_000 {
-            return Err(ConfigError::UnreachableClockRate);
-        }
-
-        let frequency = ParlIoInstance::ParlIo.tx_clock_frequency();
-        let divider = frequency / config.frequency.as_hz();
-        if divider > 0xFFFF {
-            return Err(ConfigError::UnreachableClockRate);
-        }
-        let divider = divider as u16;
-
-        PCR::regs()
-            .parl_clk_tx_conf()
-            .modify(|_, w| unsafe { w.parl_clk_tx_div_num().bits(divider) });
+        apply_clock_divider(true, config.frequency)?;
 
         Instance::set_tx_idle_value(config.idle_value);
         Instance::set_tx_sample_edge(config.sample_edge);
@@ -1247,7 +1283,7 @@ pub struct ParlIoTxTransfer<'d, BUF: DmaTxBuffer, Dm: DriverMode> {
 }
 
 impl<'d, BUF: DmaTxBuffer, Dm: DriverMode> ParlIoTxTransfer<'d, BUF, Dm> {
-    /// Returns true when [Self::wait] will not block.
+    /// Returns whether [`Self::wait`] will not block.
     pub fn is_done(&self) -> bool {
         Instance::is_tx_eof()
     }
@@ -1319,15 +1355,15 @@ impl<'d, Dm> ParlIoRx<'d, Dm>
 where
     Dm: DriverMode,
 {
-    /// Perform a DMA read.
+    /// Performs a DMA read.
     ///
-    /// This will return a [ParlIoRxTransfer]
+    /// Returns a [`ParlIoRxTransfer`].
     ///
     /// When the number of bytes is specified, the maximum amount of data is
     /// 32736 bytes and the transfer ends when the number of specified bytes
     /// is received.
     ///
-    /// When the number of bytes is unspecified, there's no limit the amount of
+    /// When the number of bytes is unspecified, there is no limit to the amount of
     /// data transferred and the transfer ends when the enable signal
     /// signals the end or the DMA buffer runs out of space.
     pub fn read<BUF>(
@@ -1377,22 +1413,9 @@ where
         })
     }
 
-    /// Change the bus configuration.
+    /// Changes the bus configuration.
     pub fn apply_config(&mut self, config: &RxConfig) -> Result<(), ConfigError> {
-        if config.frequency.as_hz() > 40_000_000 {
-            return Err(ConfigError::UnreachableClockRate);
-        }
-
-        let frequency = ParlIoInstance::ParlIo.rx_clock_frequency();
-        let divider = frequency / config.frequency.as_hz();
-        if divider > 0xffff {
-            return Err(ConfigError::UnreachableClockRate);
-        }
-        let divider = divider as u16;
-
-        PCR::regs()
-            .parl_clk_rx_conf()
-            .modify(|_, w| unsafe { w.parl_clk_rx_div_num().bits(divider) });
+        apply_clock_divider(false, config.frequency)?;
 
         Instance::set_rx_bit_order(config.bit_order);
         Instance::set_rx_timeout_ticks(config.timeout_ticks);
@@ -1411,7 +1434,7 @@ pub struct ParlIoRxTransfer<'d, BUF: DmaRxBuffer, Dm: DriverMode> {
 }
 
 impl<'d, BUF: DmaRxBuffer, Dm: DriverMode> ParlIoRxTransfer<'d, BUF, Dm> {
-    /// Returns true when [Self::wait] will not block.
+    /// Returns whether [`Self::wait`] will not block.
     pub fn is_done(&self) -> bool {
         if self.dma_result.is_some() {
             return true;
@@ -1483,7 +1506,7 @@ impl<BUF: DmaRxBuffer, Dm: DriverMode> Drop for ParlIoRxTransfer<'_, BUF, Dm> {
     }
 }
 
-/// Creates a TX channel
+/// TX channel builder for parallel IO.
 pub struct TxCreator<'d, Dm>
 where
     Dm: DriverMode,
@@ -1492,7 +1515,7 @@ where
     _guard: GenericPeripheralGuard<{ Peripheral::ParlIo as u8 }>,
 }
 
-/// Creates a RX channel
+/// RX channel builder for parallel IO.
 pub struct RxCreator<'d, Dm>
 where
     Dm: DriverMode,
@@ -1568,7 +1591,7 @@ pub mod asynch {
     }
 
     impl<BUF: DmaTxBuffer> ParlIoTxTransfer<'_, BUF, crate::Async> {
-        /// Waits for [Self::is_done] to return true.
+        /// Waits for [`Self::is_done`] to return true.
         pub async fn wait_for_done(&mut self) {
             let future = TxDoneFuture::new();
             future.await;
@@ -1576,7 +1599,7 @@ pub mod asynch {
     }
 
     impl<BUF: DmaRxBuffer> ParlIoRxTransfer<'_, BUF, crate::Async> {
-        /// Waits for [Self::is_done] to return true.
+        /// Waits for [`Self::is_done`] to return true.
         pub async fn wait_for_done(&mut self) {
             if self.dma_result.is_some() {
                 return;
@@ -1632,9 +1655,9 @@ mod private {
 
     /// Generation of GDMA SUC EOF
     pub(super) enum EofMode {
-        /// Generate GDMA SUC EOF by data byte length
+        /// Generates GDMA SUC EOF by data byte length.
         ByteLen,
-        /// Generate GDMA SUC EOF by the external enable signal
+        /// Generates GDMA SUC EOF by the external enable signal.
         EnableSignal,
     }
 

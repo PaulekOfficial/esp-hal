@@ -68,7 +68,7 @@ use crate::{
 /// [`Pull::None`][crate::gpio::Pull::None] and no external resistor therefore floats during the
 /// sleep, and a floating pad wakes the chip immediately and every time.
 ///
-/// Give a level-triggered wake pin a pull against the level that wakes the chip, or an external
+/// A level-triggered wake pin needs a pull against the level that wakes the chip, or an external
 /// resistor. For a pin that wakes the chip on a low level, use an external pull-up.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, procmacros::BuilderLite)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -393,7 +393,7 @@ fn collect(buffer: &mut [Armed; MAX_ARMED]) -> (&[Armed], bool) {
 /// Returns the level that wakes the chip through this pad, or `None` if the trigger sets no level.
 ///
 /// The wake paths accept a level only, so an edge trigger becomes the level at the end of the edge.
-/// This keeps the request of the user. `AnyEdge` ends at the level that the pin is not at now,
+/// This keeps the configured request. `AnyEdge` ends at the level that the pin is not at now,
 /// which is the meaning of "wake when the pin changes". This read of the pin can race with the pin,
 /// but the result is safe. If the pin changes before the sleep starts, the path arms a level that
 /// is already present, and the sleep is rejected or ends immediately.
@@ -459,12 +459,6 @@ pub(crate) fn isolate_pads_for_deep_sleep() {
     if !hold_enabled {
         return;
     }
-    let base = cfg_select! {
-        esp32 => crate::peripherals::RTC_IO::regs(),
-        _ => LPWR::regs(),
-    };
-    let held = base.dig_pad_hold().read().bits();
-
     for gpio in 0..PAD_COUNT as u8 {
         // Only the pads that the digital supply feeds leak current, and those are the pads with no
         // low-power number. The low-power pads have their own supply, which stays powered, and a
@@ -475,7 +469,7 @@ pub(crate) fn isolate_pads_for_deep_sleep() {
 
         // A pad that the user holds keeps its level, which is the purpose of the hold. Isolation
         // would cancel that request.
-        if held & digital_hold_mask(gpio) != 0 {
+        if crate::gpio::lp_io::low_level::is_digital_pad_held(gpio) {
             continue;
         }
 
@@ -490,29 +484,5 @@ pub(crate) fn isolate_pads_for_deep_sleep() {
             // A pad that keeps a peripheral function increases the deep-sleep current.
             w.mcu_sel().bits(AlternateFunction::GPIO as u8)
         });
-    }
-}
-
-/// Returns the bit of `gpio` in the digital pad-hold register.
-///
-/// The register covers the digital pads only, so the bit position is not the pin number on every
-/// chip. The esp32s2 and esp32s3 registers start at the first digital pad, and the esp32 register
-/// lists its pads in its own order.
-#[cfg(sleep_deep_sleep_needs_gpio_isolation)]
-fn digital_hold_mask(gpio: u8) -> u32 {
-    cfg_select! {
-        esp32 => {
-            1 << match gpio {
-                1 => 1,
-                3 => 0,
-                5 => 8,
-                6..=11 => gpio - 4,
-                16..=19 | 21..=23 => gpio - 7,
-                // The digital supply feeds no other pad, so no other pad reaches this code.
-                _ => return 0,
-            }
-        }
-        any(esp32s2, esp32s3) => 1 << (gpio - 21),
-        _ => 1 << gpio,
     }
 }

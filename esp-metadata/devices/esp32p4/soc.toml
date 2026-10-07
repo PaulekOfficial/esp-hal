@@ -12,6 +12,7 @@ target = "riscv32imafc-unknown-none-elf"
 cores  = 2
 datasheet = "https://www.espressif.com/sites/default/files/documentation/esp32-p4_datasheet_en.pdf"
 trm   = "https://www.espressif.com/sites/default/files/documentation/esp32-p4_technical_reference_manual_en.pdf"
+support_note = "Revisions below v3.0 are not supported."
 
 [device.mmu]
 page_size = 0x10000
@@ -26,16 +27,7 @@ has_md5_bsd = true
 support_status = "partial"
 status_registers = 5
 software_interrupt_count = 4
-# ESP32-P4 uses CLIC with 48 interrupt lines (TRM v0.5, Ch 14)
 controller = { Riscv = { flavour = "clic", interrupts = 48, priority_levels = 8 } }
-
-# TODO: align with newer TRM revisions after v0.5. The v0.5 TRM still has
-# the following sections incomplete:
-# - Bus Architecture
-# - Processor Instruction Extensions
-# - AXI Performance Monitor
-# - MIPI DSI (CAM)
-# - I3C
 
 [device.soc]
 cpu_has_branch_predictor = true
@@ -46,13 +38,9 @@ internal_memory_cached = true
 
 has_swd_watchdog = true
 
-# HP L2MEM: 0x4FF0_0000 - 0x4FFC_0000 (768 KB)
-# ROM bootloader reserves 0x4FF0_0000 - 0x4FF4_0000 (256 KB)
-# dram: usable application RAM (after ROM reserved region)
-# dram2_uninit: ROM reserved area, reclaimable after 2nd-stage bootloader
 memory_map = { ranges = [
-    { name = "dram", start = 0x4FF4_0000, end = 0x4FFC_0000 },
-    { name = "dram2_uninit", start = 0x4FF0_0000, end = 0x4FF4_0000 },
+    { name = "dram", start = 0x4FF4_0000, end = 0x4FFA_DFC0 },
+    { name = "dram2_uninit", start = 0x4FFA_DFC0, end = 0x4FFB_EFC0 },
     { name = "irom", start = 0x4000_0000, end = 0x4400_0000 },
     { name = "drom", start = 0x4000_0000, end = 0x4400_0000 },
 ] }
@@ -71,11 +59,14 @@ peripherals = [
     { name = "LP_I2C_ANA_MST" },
     { name = "CLIC" },
     { name = "IO_MUX" },
+    { name = "IOMUX_MSPI_PIN", hidden = true },
+    { name = "LP_I2C0" },
     { name = "LP_AON", pac = "LP_SYS" },
     { name = "LP_AON_CLKRST" },
     { name = "LP_SYS" },
     { name = "LP_GPIO" },
     { name = "LP_IO_MUX" },
+    { name = "LP_PERI" },
     { name = "RTC_TIMER", pac = "LP_TIMER" },
     { name = "LP_WDT" },
     { name = "LPWR", pac = "LP_SYS" },
@@ -88,8 +79,11 @@ peripherals = [
     { name = "UART2", interrupts = { peri = "UART2" }, stable = true, clock_group = "UART" },
     { name = "UART3", interrupts = { peri = "UART3" }, stable = true, clock_group = "UART" },
     { name = "UART4", interrupts = { peri = "UART4" }, stable = true, clock_group = "UART" },
-    { name = "SPI0" },
-    { name = "SPI1" },
+    { name = "UHCI0" },
+    { name = "SPI0", hidden = true },
+    { name = "SPI1", hidden = true },
+    { name = "MEMSPI2", hidden = true },
+    { name = "MEMSPI3", hidden = true },
     { name = "SPI2", interrupts = { peri = "SPI2" }, stable = true, clock_group = "SPI" },
     { name = "SPI3", interrupts = { peri = "SPI3" }, stable = true, clock_group = "SPI" },
     { name = "I2C0", interrupts = { peri = "I2C0" }, stable = true, clock_group = "I2C" },
@@ -100,7 +94,6 @@ peripherals = [
     { name = "TWAI0", interrupts = { peri = "TWAI0" } },
     { name = "TWAI1", interrupts = { peri = "TWAI1" } },
     { name = "TWAI2", interrupts = { peri = "TWAI2" } },
-    { name = "PSRAM", virtual = true },
     # DMA: P4 has three DMA blocks; see [device.dma] below for the table.
     # esp-hal's `Dma` singleton needs the GDMA v2 layout, so map it to AHB_DMA.
     { name = "DMA", pac = "AHB_DMA" },
@@ -119,8 +112,9 @@ peripherals = [
     { name = "MCPWM0", interrupts = { peri = "PWM0" } },
     { name = "MCPWM1", interrupts = { peri = "PWM1" } },
     { name = "PCNT", interrupts = { peri = "PCNT" } },
-    { name = "RMT", interrupts = { peri = "RMT" } },
-    { name = "ADC" },
+    { name = "APB_SARADC", pac = "ADC" },
+    { name = "LP_ADC" },
+    { name = "RMT", virtual = true, interrupts = { peri = "RMT" }, clock_group = "RMT" }, # PAC field names differ from ESP32-S3; overlay_rmt maps them.
     { name = "AES", interrupts = { peri = "AES" } },
     { name = "SHA", interrupts = { peri = "SHA" } },
     { name = "RSA", interrupts = { peri = "RSA" } },
@@ -129,9 +123,16 @@ peripherals = [
     { name = "USB_HS", interrupts = { peri = "USB_HS" } },
     { name = "USB_WRAP", hidden = true },
 
+    { name = "ADC1", virtual = true },
+    { name = "ADC2", virtual = true },
     { name = "FLASH", virtual = true },
-    { name = "SW_INTERRUPT", virtual = true },
+    { name = "PSRAM", virtual = true, clock_group = "PSRAM" },
+    { name = "GPIO_DEDICATED", virtual = true },
     { name = "CPU_CTRL", virtual = true },
+    { name = "FROM_CPU_INTR0", virtual = true },
+    { name = "FROM_CPU_INTR1", virtual = true },
+    { name = "FROM_CPU_INTR2", virtual = true },
+    { name = "FROM_CPU_INTR3", virtual = true },
 ]
 
 [device.soc.clocks]
@@ -197,6 +198,8 @@ ll_intr_mask = 0x3ffff
 fifo_size = 32
 has_bus_timeout_enable = true
 max_bus_timeout = 0x1F
+can_estimate_nack_reason = true # txfifo_raddr is present
+has_conf_update = true
 has_arbitration_en = true
 has_pd_en = true
 
@@ -209,8 +212,9 @@ engines = [
         name = "AHB_GDMA",
         max_priority = 5,
         burst_sizes = [0, 4, 16, 32], # unclear if 64 byte (INCR16) is supported
-        drivers = ["i2s"],
+        drivers = ["i2s", "uhci"],
         peripheral_instances = [
+            { name = "UHCI0", dma_id = 2 },
             { name = "I2S0", dma_id = 3 },
             { name = "I2S1", dma_id = 4 },
             { name = "I2S2", dma_id = 5 },
@@ -225,7 +229,7 @@ engines = [
         name = "AXI_GDMA",
         max_priority = 5,
         burst_sizes = [8, 16, 32, 64, 128],
-        drivers = ["aes", "sha", "spi_master"],
+        drivers = ["aes", "sha", "spi_master", "spi_slave"],
         peripheral_instances = [
             # LCD_CAM
             { name = "SPI2", dma_id = 1 },
@@ -260,7 +264,11 @@ engines = [
 support_status = "not_supported"
 
 [device.adc]
-support_status = "not_supported"
+support_status = "partial"
+instances = [
+    { name = "adc1" },
+    { name = "adc2" },
+]
 
 [device.assist_debug]
 support_status = "not_supported"
@@ -353,7 +361,7 @@ channel_count = 8
 support_status = "not_supported"
 
 [device.lp_i2c_master]
-support_status = "not_supported"
+support_status = "partial"
 version = "lp_i2c"
 fifo_size = 16
 
@@ -368,11 +376,17 @@ support_status = "not_supported"
 support_status = "not_supported"  # LCD path of LCD_CAM block
 
 [device.rmt]
-support_status = "not_supported"
+support_status = "partial"
 ram_start = 0x500A2800
 channel_ram_size = 48
 channels = ["Tx", "Tx", "Tx", "Tx", "Rx", "Rx", "Rx", "Rx"]
-# TODO capabilities
+has_tx_immediate_stop = true
+has_tx_loop_count = true
+has_tx_loop_auto_stop = true
+has_tx_carrier_data_only = true
+has_tx_sync = true
+has_rx_wrap = true
+has_rx_demodulation = true
 
 [device.parl_io]
 support_status = "not_supported"
@@ -447,7 +461,25 @@ wakeup_sources = {
 }
 
 [device.spi_slave]
-support_status = "not_supported"
+support_status = "partial"
+instances = [
+    {
+        name = "spi2",
+        sys_instance = "Spi2",
+        sclk = "SPI2_CK",
+        mosi = "SPI2_D",
+        miso = "SPI2_Q",
+        cs = "SPI2_CS"
+    },
+    {
+        name = "spi3",
+        sys_instance = "Spi3",
+        sclk = "SPI3_CK",
+        mosi = "SPI3_D",
+        miso = "SPI3_Q",
+        cs = "SPI3_CS"
+    },
+]
 [device.lp_spi_master]
 support_status = "not_supported"
 [device.lp_spi_slave]
@@ -461,7 +493,8 @@ support_status = "not_supported"
 [device.touch]
 support_status = "not_supported"
 [device.uhci]
-support_status = "not_supported"
+support_status = "partial"
+combined_uart_selector_field = true
 [device.ulp_riscv]
 support_status = "not_supported"
 
@@ -490,6 +523,8 @@ algo = {
 
 [device.psram]
 extmem_origin = 0x4800_0000
+hex_spi = true
+octal_spi = true
 
 [device.rsa]
 version = 3
@@ -534,9 +569,12 @@ support_status = "supported"
 # {include gpio.toml}
 
 [device.dedicated_gpio]
-version = "riscv_v1"
-support_status = "not_supported"
-channels = []
+version = "riscv_v2"
+support_status = "partial"
+channels = [
+    ["CPU_GPIO_0", "CPU_GPIO_1",  "CPU_GPIO_2",  "CPU_GPIO_3",  "CPU_GPIO_4",  "CPU_GPIO_5",  "CPU_GPIO_6",  "CPU_GPIO_7" ],
+    ["CPU_GPIO_8", "CPU_GPIO_9",  "CPU_GPIO_10", "CPU_GPIO_11", "CPU_GPIO_12", "CPU_GPIO_13", "CPU_GPIO_14", "CPU_GPIO_15"],
+]
 
 [device.key_manager]
 support_status = "not_supported"

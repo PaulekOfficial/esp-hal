@@ -39,7 +39,7 @@ memory_map = { ranges = [
 ] }
 
 peripherals = [
-    # { name = "APB_SARADC" },
+    { name = "APB_SARADC" },
     # { name = "AVC" },
     { name = "ASSIST_DEBUG"},
     { name = "CLINT" },
@@ -99,20 +99,26 @@ peripherals = [
     { name = "UART2", interrupts = { peri = "UART2" }, stable = true, clock_group = "UART" },
     { name = "USB_DEVICE", interrupts = { peri = "USB_DEVICE" } },
 
+    { name = "ADC1", virtual = true },
     { name = "BT", virtual = true, interrupts = { mac = "BT_MAC", lp_timer = "LP_TIMER" } },
     { name = "FLASH", virtual = true },
     { name = "GPIO_DEDICATED", virtual = true },
-    { name = "LP_CORE", virtual = true },
-    { name = "SW_INTERRUPT", virtual = true },
     { name = "WIFI", virtual = true, interrupts = { bb = "WIFI_BB", mac = "WIFI_MAC", pwr = "WIFI_PWR" }, stable = true  },
     { name = "PSRAM", virtual = true },
+    { name = "FROM_CPU_INTR0", virtual = true },
+    { name = "FROM_CPU_INTR1", virtual = true },
+    { name = "FROM_CPU_INTR2", virtual = true },
+    { name = "FROM_CPU_INTR3", virtual = true },
 ]
 
 [device.soc.clocks]
 # {include clocks.toml}
 
 [device.adc]
-support_status = { status = "not_supported", issue = 5422 }
+support_status = "partial"
+instances = [
+    { name = "adc1" },
+]
 
 [device.interrupts]
 support_status = "partial"
@@ -146,7 +152,7 @@ engines = [
         name = "AHB_GDMA",
         max_priority = 5,
         burst_sizes = [4, 16, 32],
-        drivers = ["sha", "spi_master", "i2s"],
+        drivers = ["sha", "spi_master", "spi_slave", "i2s"],
         peripheral_instances = [
             { name = "SPI2", dma_id = 1 },
             { name = "I2S0", dma_id = 3 },

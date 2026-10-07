@@ -1,7 +1,8 @@
 #![cfg_attr(docsrs, procmacros::doc_replace(
     "dma_channel" => {
         cfg(spi_slave_dma_engine = "SPI_DMA") => "DMA_SPI2",
-        _ => "DMA_CH0",
+        cfg(spi_slave_dma_engine = "AHB_GDMA") => "DMA_CH0",
+        cfg(spi_slave_dma_engine = "AXI_GDMA") => "DMA_AXI_CH0",
     },
 ))]
 //! # Serial Peripheral Interface - Slave Mode
@@ -94,7 +95,7 @@ pub struct Spi<'d, Dm: DriverMode> {
     _guard: PeripheralGuard,
 }
 impl<'d> Spi<'d, Blocking> {
-    /// Constructs an SPI instance in 8bit dataframe mode.
+    /// Creates a new SPI instance in 8-bit data-frame mode.
     #[instability::unstable]
     pub fn new(spi: impl Instance + 'd, mode: Mode) -> Spi<'d, Blocking> {
         let guard = PeripheralGuard::new(spi.info().peripheral);
@@ -121,21 +122,21 @@ impl<'d> Spi<'d, Blocking> {
         signal.connect_to(&pin);
     }
 
-    /// Assign the SCK (Serial Clock) pin for the SPI instance.
+    /// Assigns the SCK (Serial Clock) pin for the SPI instance.
     #[instability::unstable]
     pub fn with_sck(self, sclk: impl PeripheralInput<'d>) -> Self {
         self.connect_input_pin(sclk, self.spi.info().sclk);
         self
     }
 
-    /// Assign the MOSI (Master Out Slave In) pin for the SPI instance.
+    /// Assigns the MOSI (Master Out Slave In) pin for the SPI instance.
     #[instability::unstable]
     pub fn with_mosi(self, mosi: impl PeripheralInput<'d>) -> Self {
         self.connect_input_pin(mosi, self.spi.info().mosi);
         self
     }
 
-    /// Assign the MISO (Master In Slave Out) pin for the SPI instance.
+    /// Assigns the MISO (Master In Slave Out) pin for the SPI instance.
     #[instability::unstable]
     pub fn with_miso(self, miso: impl PeripheralOutput<'d>) -> Self {
         let miso = miso.into();
@@ -147,7 +148,7 @@ impl<'d> Spi<'d, Blocking> {
         self
     }
 
-    /// Assign the CS (Chip Select) pin for the SPI instance.
+    /// Assigns the CS (Chip Select) pin for the SPI instance.
     #[instability::unstable]
     pub fn with_cs(self, cs: impl PeripheralInput<'d>) -> Self {
         self.connect_input_pin(cs, self.spi.info().cs);
@@ -164,6 +165,8 @@ pub mod dma {
     use enumset::enum_set;
 
     use super::*;
+    #[cfg(not(spi_slave_dma_engine = "SPI_DMA"))]
+    use crate::RegisterToggle;
     use crate::{
         DriverMode,
         dma::{Channel, DmaRxBuffer, DmaRxInterrupt, DmaTxBuffer, EmptyBuf},
@@ -232,10 +235,10 @@ pub mod dma {
             }
         }
 
-        /// Register a buffer for a DMA write.
+        /// Registers a buffer for a DMA write.
         ///
-        /// This will return a [SpiDmaTransfer]. The maximum amount of data to
-        /// be sent is 32736 bytes.
+        /// Returns a [`SpiDmaTransfer`] that can be used to wait for the transfer to complete.
+        /// The maximum amount of data to be sent is 32736 bytes.
         ///
         /// The write is driven by the SPI master's sclk signal and cs line.
         #[instability::unstable]
@@ -267,10 +270,10 @@ pub mod dma {
             Ok(SpiDmaTransfer::new(self, buffer, false, true))
         }
 
-        /// Register a buffer for a DMA read.
+        /// Registers a buffer for a DMA read.
         ///
-        /// This will return a [SpiDmaTransfer]. The maximum amount of data to
-        /// be received is 32736 bytes.
+        /// Returns a [`SpiDmaTransfer`] that can be used to wait for the transfer to complete.
+        /// The maximum amount of data to be received is 32736 bytes.
         ///
         /// The read is driven by the SPI master's sclk signal and cs line.
         #[instability::unstable]
@@ -302,10 +305,10 @@ pub mod dma {
             Ok(SpiDmaTransfer::new(self, buffer, true, false))
         }
 
-        /// Register buffers for a DMA transfer.
+        /// Registers buffers for a DMA transfer.
         ///
-        /// This will return a [SpiDmaTransfer]. The maximum amount of data to
-        /// be sent/received is 32736 bytes.
+        /// Returns a [`SpiDmaTransfer`] that can be used to wait for the transfer to complete.
+        /// The maximum amount of data to be sent/received is 32736 bytes.
         ///
         /// The data transfer is driven by the SPI master's sclk signal and cs
         /// line.
@@ -355,8 +358,7 @@ pub mod dma {
 
     /// A structure representing a DMA transfer for SPI.
     ///
-    /// This structure holds references to the SPI instance, DMA buffers, and
-    /// transfer status.
+    /// Holds references to the SPI instance, DMA buffers, and transfer status.
     #[instability::unstable]
     pub struct SpiDmaTransfer<'d, Dm, Buf>
     where
@@ -383,10 +385,10 @@ pub mod dma {
             }
         }
 
-        /// Checks if the transfer is complete.
+        /// Returns whether the transfer is complete.
         ///
-        /// This method returns `true` if both RX and TX operations are done,
-        /// and the SPI instance is no longer busy.
+        /// Both RX and TX operations are done, and the SPI instance is no longer
+        /// busy.
         #[instability::unstable]
         pub fn is_done(&self) -> bool {
             if self.has_rx {
@@ -407,7 +409,7 @@ pub mod dma {
 
         /// Waits for the DMA transfer to complete.
         ///
-        /// This method blocks until the transfer is finished and returns the
+        /// Blocks until the transfer is finished and returns the
         /// `SpiDma` instance and the associated buffer.
         #[instability::unstable]
         pub fn wait(mut self) -> (SpiDma<'d, Dm>, Buf) {
@@ -490,8 +492,6 @@ pub mod dma {
             self.info
                 .prepare_length_and_lines(read_buffer_len, write_buffer_len);
 
-            self.reset_dma_before_usr_cmd();
-
             #[cfg(not(esp32))]
             self.regs()
                 .dma_conf()
@@ -499,26 +499,36 @@ pub mod dma {
 
             self.clear_dma_interrupts();
             self.info.setup_for_flush();
-            self.regs().cmd().modify(|_, w| w.usr().set_bit());
 
             if read_buffer_len > 0 {
+                self.reset_dma_rx_fifo();
                 channel.rx.start_transfer()?;
             }
 
             if write_buffer_len > 0 {
+                self.reset_dma_tx_fifo();
                 channel.tx.start_transfer()?;
             }
+
+            // The SPI master owns SCLK and CS. Arm the peripheral only after
+            // both GDMA directions can service the first edge.
+            self.regs().cmd().modify(|_, w| w.usr().set_bit());
 
             Ok(())
         }
 
-        fn reset_dma_before_usr_cmd(&self) {
+        fn reset_dma_rx_fifo(&self) {
             #[cfg(not(spi_slave_dma_engine = "SPI_DMA"))]
-            self.regs().dma_conf().modify(|_, w| {
-                w.rx_afifo_rst().set_bit();
-                w.buf_afifo_rst().set_bit();
-                w.dma_afifo_rst().set_bit()
-            });
+            self.regs()
+                .dma_conf()
+                .toggle(|w, bit| w.rx_afifo_rst().bit(bit));
+        }
+
+        fn reset_dma_tx_fifo(&self) {
+            #[cfg(not(spi_slave_dma_engine = "SPI_DMA"))]
+            self.regs()
+                .dma_conf()
+                .toggle(|w, bit| w.dma_afifo_rst().bit(bit));
         }
 
         fn enable_dma(&self) {
@@ -619,7 +629,7 @@ pub trait Instance: crate::private::Sealed + any::Degrade {
 pub struct Info {
     /// Pointer to the register block for this SPI instance.
     ///
-    /// Use [Self::register_block] to access the register block.
+    /// Used with [`Self::register_block`] to access the register block.
     pub register_block: *const RegisterBlock,
 
     /// System peripheral marker.
@@ -679,7 +689,7 @@ impl Info {
         });
     }
 
-    /// Initialize for full-duplex 1 bit mode
+    /// Initializes for full-duplex 1 bit mode.
     fn init(&self) {
         #[cfg(soc_has_pcr)]
         crate::peripherals::PCR::regs()

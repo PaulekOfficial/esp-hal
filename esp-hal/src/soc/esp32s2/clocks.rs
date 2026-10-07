@@ -19,7 +19,7 @@ use esp_rom_sys::rom::{ets_delay_us, ets_update_cpu_frequency_rom};
 
 use crate::{
     peripherals::{I2C_ANA_MST, LPWR, RMT, SYSCON, SYSTEM, TIMG0, TIMG1},
-    soc::regi2c,
+    soc::{regi2c, xtal32k},
     time::Rate,
 };
 
@@ -54,7 +54,7 @@ impl CpuClock {
         cpu_pll_div: Some(CpuPllDivConfig::new(CpuPllDivDivisor::_6)),
         system_pre_div: None,
         cpu_clk: Some(CpuClkConfig::Pll),
-        rtc_slow_clk: Some(RtcSlowClkConfig::RcSlow),
+        rtc_slow_clk: Some(xtal32k::default_rtc_slow_clk()),
         rtc_fast_clk: Some(RtcFastClkConfig::Rc),
         timg_calibration_clock: None,
     };
@@ -65,7 +65,7 @@ impl CpuClock {
         cpu_pll_div: Some(CpuPllDivConfig::new(CpuPllDivDivisor::_3)),
         system_pre_div: None,
         cpu_clk: Some(CpuClkConfig::Pll),
-        rtc_slow_clk: Some(RtcSlowClkConfig::RcSlow),
+        rtc_slow_clk: Some(xtal32k::default_rtc_slow_clk()),
         rtc_fast_clk: Some(RtcFastClkConfig::Rc),
         timg_calibration_clock: None,
     };
@@ -76,7 +76,7 @@ impl CpuClock {
         cpu_pll_div: Some(CpuPllDivConfig::new(CpuPllDivDivisor::_2)),
         system_pre_div: None,
         cpu_clk: Some(CpuClkConfig::Pll),
-        rtc_slow_clk: Some(RtcSlowClkConfig::RcSlow),
+        rtc_slow_clk: Some(xtal32k::default_rtc_slow_clk()),
         rtc_fast_clk: Some(RtcFastClkConfig::Rc),
         timg_calibration_clock: None,
     };
@@ -502,6 +502,7 @@ fn enable_apb_clk_80m_impl(_clocks: &mut ClockTree, _en: bool) {
 
 // XTAL32K_CLK
 
+#[cfg(use_xtal32k)]
 fn enable_xtal32k_clk_impl(_clocks: &mut ClockTree, en: bool) {
     // This bit only enables the clock for the digital core, what about RTC? Should we split the
     // clock node in two?
@@ -583,6 +584,7 @@ fn configure_rtc_slow_clk_impl(
     LPWR::regs().clk_conf().modify(|_, w| unsafe {
         w.ana_clk_rtc_sel().bits(match new_config {
             RtcSlowClkConfig::RcSlow => 0,
+            #[cfg(use_xtal32k)]
             RtcSlowClkConfig::Xtal32k => 1,
             RtcSlowClkConfig::RcFast => 2,
         })
@@ -644,6 +646,7 @@ fn configure_timg_calibration_clock_impl(
         w.rtc_cali_clk_sel().bits(match new_config {
             TimgCalibrationClockConfig::RtcClk => 0,
             TimgCalibrationClockConfig::RcFastDivClk => 1,
+            #[cfg(use_xtal32k)]
             TimgCalibrationClockConfig::Xtal32kClk => 2,
         })
     });
@@ -688,15 +691,6 @@ impl SdmInstance {
         crate::peripherals::GPIO_SD::regs()
             .sigmadelta_misc()
             .modify(|_, w| w.function_clk_en().bit(en));
-    }
-
-    fn configure_function_clock_impl(
-        self,
-        _clocks: &mut ClockTree,
-        _old_config: Option<SdmFunctionClockConfig>,
-        _new_config: SdmFunctionClockConfig,
-    ) {
-        // Nothing to do.
     }
 }
 impl RmtInstance {

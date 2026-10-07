@@ -18,7 +18,7 @@
 
 use crate::{
     peripherals::{I2C_ANA_MST, LP_CLKRST, PCR, PMU, TIMG0},
-    soc::regi2c,
+    soc::{regi2c, xtal32k},
 };
 
 define_clock_tree_types!();
@@ -55,7 +55,7 @@ impl CpuClock {
         ledc_sclk: Some(LedcSclkConfig::PllF80m),
         iomux_function_clock: Some(IomuxFunctionClockConfig::PllF80m),
         lp_fast_clk: Some(LpFastClkConfig::RcFastClk),
-        lp_slow_clk: Some(LpSlowClkConfig::RcSlow),
+        lp_slow_clk: Some(xtal32k::default_lp_slow_clk()),
         timg_calibration_clock: None,
     };
     const PRESET_160: ClockConfig = ClockConfig {
@@ -72,7 +72,7 @@ impl CpuClock {
         ledc_sclk: Some(LedcSclkConfig::PllF80m),
         iomux_function_clock: Some(IomuxFunctionClockConfig::PllF80m),
         lp_fast_clk: Some(LpFastClkConfig::RcFastClk),
-        lp_slow_clk: Some(LpSlowClkConfig::RcSlow),
+        lp_slow_clk: Some(xtal32k::default_lp_slow_clk()),
         timg_calibration_clock: None,
     };
 }
@@ -210,6 +210,7 @@ fn enable_rc_fast_clk_impl(_clocks: &mut ClockTree, en: bool) {
 
 // XTAL32K_CLK
 
+#[cfg(use_xtal32k)]
 fn enable_xtal32k_clk_impl(_clocks: &mut ClockTree, en: bool) {
     LP_CLKRST::regs().xtal32k().write(|w| unsafe {
         w.dac_xtal32k().bits(3);
@@ -539,6 +540,7 @@ fn configure_lp_slow_clk_impl(
 ) {
     LP_CLKRST::regs().lp_clk_conf().modify(|_, w| unsafe {
         w.slow_clk_sel().bits(match new_config {
+            #[cfg(use_xtal32k)]
             LpSlowClkConfig::Xtal32k => 1,
             LpSlowClkConfig::RcSlow => 0,
             LpSlowClkConfig::OscSlow => 2,
@@ -562,6 +564,7 @@ fn configure_timg_calibration_clock_impl(
         w.rtc_cali_clk_sel().bits(match new_config {
             TimgCalibrationClockConfig::RcSlowClk => 0,
             TimgCalibrationClockConfig::RcFastDivClk => 1,
+            #[cfg(use_xtal32k)]
             TimgCalibrationClockConfig::Xtal32kClk => 2,
         })
     });
@@ -647,15 +650,6 @@ impl SdmInstance {
         crate::peripherals::GPIO_SD::regs()
             .sigmadelta_misc()
             .modify(|_, w| w.function_clk_en().bit(en));
-    }
-
-    fn configure_function_clock_impl(
-        self,
-        _clocks: &mut ClockTree,
-        _old_config: Option<SdmFunctionClockConfig>,
-        _new_config: SdmFunctionClockConfig,
-    ) {
-        // Nothing to do.
     }
 }
 impl RmtInstance {

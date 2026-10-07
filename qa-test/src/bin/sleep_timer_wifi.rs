@@ -10,7 +10,6 @@ use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_hal::{
     delay::Delay,
-    interrupt::software::SoftwareInterruptControl,
     main,
     ram,
     rtc_cntl::{
@@ -26,6 +25,7 @@ use esp_hal::{
 use esp_println::println;
 use esp_radio::wifi::{
     self,
+    AuthenticationMethodConfig,
     ControllerConfig,
     Interface,
     WifiController,
@@ -42,8 +42,7 @@ async fn main(_spawner: Spawner) -> ! {
     esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     let delay = Delay::new();
     let mut lpwr = LowPower::new(peripherals.LPWR);
@@ -58,8 +57,10 @@ async fn main(_spawner: Spawner) -> ! {
 
     let station_config = wifi::Config::Station(
         StationConfig::default()
-            .with_ssid("FakeNetwork")
-            .with_password("password".into()),
+            .with_ssid("FakeNetwork".try_into().unwrap())
+            .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+                "password".try_into().unwrap(),
+            )),
     );
     let _wifi_interface = Interface::station();
     let mut controller = WifiController::new(

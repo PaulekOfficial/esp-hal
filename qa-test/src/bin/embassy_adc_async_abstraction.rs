@@ -2,9 +2,11 @@
 //! convert the raw value to a type-specific interpretation.
 //!
 //! PINS
-//! GPIO4 for ADC1
+//! GPIO4 for ADC1, GPIO20 on the ESP32-P4
 
-//% CHIP_FILTER: adc_driver_supported && !esp32 && !esp32s2 && !esp32s3
+// The ESP32-S31 is excluded because this example calibrates the pin, and no
+// calibration scheme is implemented for that chip.
+//% CHIP_FILTER: adc_driver_supported && !esp32 && !esp32s31
 
 #![no_std]
 #![no_main]
@@ -27,7 +29,6 @@ use esp_hal::{
         RegisterAccess,
     },
     delay::Delay,
-    interrupt::software::SoftwareInterruptControl,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
@@ -83,12 +84,14 @@ impl Converter for Identity {
 async fn main(_spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     let mut adc1_config = AdcConfig::new();
-    let analog_pin1 = peripherals.GPIO4;
+    let analog_pin1 = cfg_select! {
+        feature = "esp32p4" => peripherals.GPIO20,
+        _ => peripherals.GPIO4,
+    };
     let pin1 = adc1_config
         .enable_pin_with_cal::<_, AdcCalBasic<esp_hal::peripherals::ADC1<'static>>>(
             analog_pin1,

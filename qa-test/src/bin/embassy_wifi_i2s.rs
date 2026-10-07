@@ -15,14 +15,20 @@ use esp_backtrace as _;
 use esp_hal::{
     dma::DmaRxStreamBuf,
     i2s::master::{Channels, DataFormat, I2s, TdmConfig},
-    interrupt::software::SoftwareInterruptControl,
     ram,
     rng::Rng,
     time::Rate,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
-use esp_radio::wifi::{Config, ControllerConfig, Interface, WifiController, sta::StationConfig};
+use esp_radio::wifi::{
+    AuthenticationMethodConfig,
+    Config,
+    ControllerConfig,
+    Interface,
+    WifiController,
+    sta::StationConfig,
+};
 use static_cell::StaticCell;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -137,9 +143,8 @@ async fn main(spawner: Spawner) {
     esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
 
     // Preempt scheduler (WiFi)
-    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     esp_rtos::CurrentThreadHandle::get().set_priority(30);
 
@@ -169,8 +174,10 @@ async fn main(spawner: Spawner) {
     // WiFi + network stack
     let station_config = Config::Station(
         StationConfig::default()
-            .with_ssid(SSID)
-            .with_password(PASSWORD.into()),
+            .with_ssid(SSID.try_into().unwrap())
+            .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+                PASSWORD.try_into().unwrap(),
+            )),
     );
 
     println!("Starting wifi");

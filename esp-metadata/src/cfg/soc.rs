@@ -161,7 +161,6 @@ pub(crate) struct ClockTreeNodeInstance {
     node: Box<dyn ClockTreeNodeType>,
 
     include_in_global_config: bool,
-    force_configurable: bool,
 
     /// Name of the instantiated clock tree node.
     ///
@@ -194,7 +193,7 @@ impl ClockTreeNodeInstance {
     }
 
     fn is_configurable(&self) -> bool {
-        self.node.is_configurable() || self.force_configurable
+        self.node.is_configurable()
     }
 
     fn config_type(&self) -> TokenStream {
@@ -261,6 +260,21 @@ impl ClockTreeNodeInstance {
         } else {
             Some(self.frequency_call())
         }
+    }
+
+    /// Frequency of this node when it can be evaluated without an instance receiver.
+    ///
+    /// Non-configurable per-instance nodes still have a closed-form formula (for example a
+    /// fixed divider from a system clock), so their frequency can be inlined even though
+    /// `try_frequency_call` rejects the method form that takes `self`.
+    fn try_frequency_expr(&self, tree: &ProcessedClockData) -> Option<TokenStream> {
+        if let Some(freq) = self.try_frequency_call() {
+            return Some(freq);
+        }
+        if !self.is_configurable() {
+            return Some(self.node_frequency_impl(tree, &[]));
+        }
+        None
     }
 
     fn always_on(&self) -> bool {
@@ -341,6 +355,10 @@ impl ClockTreeNodeInstance {
 
     fn frequency_function_name(&self) -> Ident {
         self.suffix_function("frequency")
+    }
+
+    fn rustc_cfg_attr(&self) -> TokenStream {
+        clock_tree::rustc_cfg_attr(self.node.rustc_cfg())
     }
 
     fn config_frequency_function_name(&self) -> Ident {
@@ -490,6 +508,7 @@ impl ClockTreeNodeInstance {
             } else {
                 None
             },
+            cfg: self.node.rustc_cfg().map(str::to_string),
             request: Function {
                 _name: request_fn_name.to_string(),
                 implementation: if always_on {
@@ -753,8 +772,13 @@ impl SystemClocks {
                 clock_item.node.name()
             ));
             if is_first_instance {
+                let cfg_attr = clock_item.rustc_cfg_attr();
                 if clock_item.emits_config_type(tree) {
-                    clock_tree_node_defs.push(clock_item.config_type());
+                    let config_type = clock_item.config_type();
+                    clock_tree_node_defs.push(quote! {
+                        #cfg_attr
+                        #config_type
+                    });
                 }
 
                 let instance_count =
@@ -766,13 +790,23 @@ impl SystemClocks {
 
                 if let Some(refcount_field) = clock_item.properties.refcount_field() {
                     if let Some(instance_count) = instance_count.as_ref() {
-                        clock_tree_refcount_field_decls
-                            .push(quote! { #refcount_field: [u32; #instance_count] });
-                        clock_tree_refcount_field_inits
-                            .push(quote! { #refcount_field: [0; #instance_count] });
+                        clock_tree_refcount_field_decls.push(quote! {
+                            #cfg_attr
+                            #refcount_field: [u32; #instance_count]
+                        });
+                        clock_tree_refcount_field_inits.push(quote! {
+                            #cfg_attr
+                            #refcount_field: [0; #instance_count]
+                        });
                     } else {
-                        clock_tree_refcount_field_decls.push(quote! { #refcount_field: u32 });
-                        clock_tree_refcount_field_inits.push(quote! { #refcount_field: 0 });
+                        clock_tree_refcount_field_decls.push(quote! {
+                            #cfg_attr
+                            #refcount_field: u32
+                        });
+                        clock_tree_refcount_field_inits.push(quote! {
+                            #cfg_attr
+                            #refcount_field: 0
+                        });
                     }
                 }
 
@@ -828,6 +862,12 @@ impl SystemClocks {
                     if func.is_empty() {
                         continue;
                     }
+                    if let Some(cfg) = clock_item.node.rustc_cfg() {
+                        let cfg_doc = format!(" #[cfg({cfg})]");
+                        doclines.push(quote! {
+                            #[doc = #cfg_doc]
+                        });
+                    }
                     let func = func.to_string();
                     doclines.push(quote! {
                         #[doc = #func]
@@ -862,7 +902,10 @@ impl SystemClocks {
                     quote! { #(#[doc = #doc])* }
                 });
 
+                let cfg_attr = clock_item.rustc_cfg_attr();
+
                 configurables.push(quote! {
+                    #cfg_attr
                     #docline
                     pub #name: Option<#config_type_name>,
                 });
@@ -870,6 +913,7 @@ impl SystemClocks {
                 system_config_steps.insert(
                     clock_item.name_str(),
                     quote! {
+                        #cfg_attr
                         if let Some(config) = self.#name {
                             #config_apply_function_name(clocks, config);
                         }
@@ -943,6 +987,7 @@ impl SystemClocks {
 
             let cache_name = node.freq_cache_static_name();
             let config_freq_fn = node.config_frequency_function_name();
+            let cfg_attr = node.rustc_cfg_attr();
 
             if node.properties.receiver.is_some() {
                 let instances = tree.group_instances.get(&node.group_template).unwrap();
@@ -956,6 +1001,7 @@ impl SystemClocks {
                 );
 
                 freq_cache_statics.push(quote! {
+                    #cfg_attr
                     static #cache_name: [::core::sync::atomic::AtomicU32; #instance_count] =
                         [const { ::core::sync::atomic::AtomicU32::new(0) }; #instance_count];
                 });
@@ -980,6 +1026,7 @@ impl SystemClocks {
                 let config_field = node.properties.indexed_config_accessor();
 
                 freq_cache_statics.push(quote! {
+                    #cfg_attr
                     static #cache_name: ::core::sync::atomic::AtomicU32 =
                         ::core::sync::atomic::AtomicU32::new(0);
                 });
@@ -1038,6 +1085,7 @@ impl SystemClocks {
 
             let fn_name = node.refresh_downstream_function_name();
             let self_stmt = refresh_stmt_by_key.get(&template_key).cloned();
+            let cfg_attr = node.rustc_cfg_attr();
 
             // Build calls to direct configurable children's refresh functions.
             let children = tree
@@ -1078,6 +1126,7 @@ impl SystemClocks {
                     child_calls.push(template_group_loop(tree, group, &fns));
                 }
                 downstream_refresh_fns.push(quote! {
+                    #cfg_attr
                     fn #fn_name(clocks: &mut ClockTree, instance: #enum_name) {
                         #self_stmt
                         #(#child_calls)*
@@ -1108,6 +1157,7 @@ impl SystemClocks {
                     child_calls.push(template_group_loop(tree, group, &fns));
                 }
                 downstream_refresh_fns.push(quote! {
+                    #cfg_attr
                     fn #fn_name(clocks: &mut ClockTree) {
                         #self_stmt
                         #(#child_calls)*
@@ -1463,7 +1513,6 @@ impl DeviceClocks {
                 let node = ClockTreeNodeInstance {
                     node: node.boxed(),
                     include_in_global_config: true,
-                    force_configurable: false,
                     name: name.clone(),
                     group_instance: String::new(),
                     group_template: String::new(),
@@ -1518,9 +1567,6 @@ impl DeviceClocks {
                 let node = ClockTreeNodeInstance {
                     node: def.boxed(),
                     include_in_global_config: false,
-                    // FIXME peripherals force configurability because we don't have a way to
-                    // cfg them out. Decide if we can do better.
-                    force_configurable: true,
                     name: name.clone(),
                     group_instance: peri_name.clone(),
                     group_template: group_name.clone(),
@@ -1659,28 +1705,22 @@ impl DeviceClocks {
     fn cfgs(&self, config: &SocConfig) -> Vec<String> {
         let mut cfgs = vec![];
 
-        cfgs.extend(config.clocks.system_clocks.clock_tree.iter().map(|node| {
-            format!(
-                "soc_has_clock_node_{}",
-                node.name().from_case(Case::Constant).to_case(Case::Snake)
-            )
-        }));
-        cfgs.extend(
-            config
-                .clocks
-                .system_clocks
-                .template_groups
-                .iter()
-                .flat_map(|group| {
-                    group.clocks.iter().map(|node| {
-                        format!(
-                            "soc_has_clock_node_{}_{}",
-                            group.group.from_case(Case::Constant).to_case(Case::Snake),
-                            node.name().from_case(Case::Constant).to_case(Case::Snake)
-                        )
-                    })
-                }),
-        );
+        let mut push_node_cfgs = |name: String, node: &ClockTreeItem| {
+            let snake = name.from_case(Case::Constant).to_case(Case::Snake);
+            cfgs.push(format!("soc_has_clock_node_{snake}"));
+            if node.is_configurable() {
+                cfgs.push(format!("soc_clock_node_{snake}_is_configurable"));
+            }
+        };
+
+        for node in config.clocks.system_clocks.clock_tree.iter() {
+            push_node_cfgs(node.name().to_string(), node);
+        }
+        for group in config.clocks.system_clocks.template_groups.iter() {
+            for node in group.clocks.iter() {
+                push_node_cfgs(format!("{}_{}", group.group, node.name()), node);
+            }
+        }
 
         cfgs
     }

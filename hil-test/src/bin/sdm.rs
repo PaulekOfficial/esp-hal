@@ -13,10 +13,10 @@
 use esp_hal::{
     Blocking,
     delay::Delay,
-    gpio::{AnyPin, Level, Output, OutputConfig, interconnect::PeripheralInput},
-    peripherals::{GPIO_SD, RMT},
+    gpio::{AnyPin, Level, interconnect::PeripheralInput},
+    peripherals::{RMT, SDM_CH0},
     rmt::{CHANNEL_RAM_SIZE, Channel, PulseCode, Rmt, Rx, RxChannelConfig, RxChannelCreator},
-    sdm::Sdm,
+    sdm::{Channel as SdmChannel, ChannelConfig},
     time::Rate,
 };
 use hil_test as _;
@@ -39,7 +39,7 @@ const DUTY_STEP: u8 = 20;
 const DUTY_RATIO_TOLERANCE_PER_MILLE: u32 = 20;
 
 cfg_select! {
-    any(esp32, esp32s3) => {
+    any(esp32, esp32s3, esp32s31, esp32p4) => {
         macro_rules! rx_channel_creator {
             ($rmt:expr) => {
                 $rmt.channel4
@@ -56,7 +56,7 @@ cfg_select! {
 }
 
 struct Context {
-    gpio_sd: GPIO_SD<'static>,
+    sdm_ch0: SDM_CH0<'static>,
     rmt: RMT<'static>,
     sdm_pin: AnyPin<'static>,
     rmt_pin: AnyPin<'static>,
@@ -168,11 +168,14 @@ fn high_ratio_per_mille(data: &[PulseCode], count: usize) -> u32 {
     let mut low = 0_u32;
     let mut remaining = SAMPLE_TIME_US;
 
-    for code in data.iter().take(count) {
-        if code.length1() != 0 {
-            let length = u32::from(code.length1()).min(remaining);
+    'pulses: for code in data.iter().take(count) {
+        for (level, length) in [
+            (code.level1(), code.length1()),
+            (code.level2(), code.length2()),
+        ] {
+            let length = u32::from(length).min(remaining);
 
-            if code.level1() == Level::High {
+            if level == Level::High {
                 high += length;
             } else {
                 low += length;
@@ -180,22 +183,7 @@ fn high_ratio_per_mille(data: &[PulseCode], count: usize) -> u32 {
 
             remaining -= length;
             if remaining == 0 {
-                break;
-            }
-        }
-
-        if code.length2() != 0 {
-            let length = u32::from(code.length2()).min(remaining);
-
-            if code.level2() == Level::High {
-                high += length;
-            } else {
-                low += length;
-            }
-
-            remaining -= length;
-            if remaining == 0 {
-                break;
+                break 'pulses;
             }
         }
     }
@@ -209,13 +197,11 @@ fn expected_ratio_per_mille(duty: u8) -> u32 {
 }
 
 fn measure_high_ratio(ctx: &mut Context, duty: u8) -> Measurement {
-    let mut sdm = Sdm::new(ctx.gpio_sd.reborrow());
-    let config = sdm
-        .channel_config()
+    let config = ChannelConfig::new()
         .with_frequency(SDM_FREQUENCY)
         .unwrap()
         .with_duty(duty);
-    let channel = sdm.channel0.connect(ctx.sdm_pin.reborrow(), config);
+    let mut channel = SdmChannel::new(ctx.sdm_ch0.reborrow(), ctx.sdm_pin.reborrow(), config);
 
     Delay::new().delay_micros(SDM_WARM_UP_US);
 
@@ -226,11 +212,8 @@ fn measure_high_ratio(ctx: &mut Context, duty: u8) -> Measurement {
 
     Delay::new().delay_micros(SAMPLE_TIME_US);
 
-    drop(channel);
-    let mut output = Output::new(ctx.sdm_pin.reborrow(), Level::Low, OutputConfig::default());
-    output.set_low();
     // send idle signal so that RMT will stop recording pulses
-
+    channel.set_duty(0);
     let (count, _rx_channel) = rx_transaction.wait().unwrap();
 
     Measurement::new(&rx_data, count)
@@ -248,7 +231,7 @@ mod tests {
         let (sdm_pin, rmt_pin) = hil_test::common_test_pins!(peripherals);
 
         Context {
-            gpio_sd: peripherals.GPIO_SD,
+            sdm_ch0: peripherals.SDM_CH0,
             rmt: peripherals.RMT,
             sdm_pin: AnyPin::from(sdm_pin),
             rmt_pin: AnyPin::from(rmt_pin),

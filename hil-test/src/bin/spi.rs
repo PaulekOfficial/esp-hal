@@ -14,7 +14,10 @@ use embedded_hal_async::spi::SpiBus as SpiBusAsync;
 use esp_hal::{
     Blocking,
     gpio::Input,
-    spi::master::{Config, Spi},
+    spi::{
+        Mode,
+        master::{Config, Spi},
+    },
     time::Rate,
 };
 use hil_test as _;
@@ -42,6 +45,20 @@ cfg_select! {
         };
     }
     _ => {}
+}
+
+#[cfg(soc_clock_node_spi_function_clock_is_configurable)]
+use esp_hal::spi::master::ClockSource;
+
+fn half_duplex_config() -> Config {
+    let config = Config::default()
+        .with_frequency(Rate::from_khz(100))
+        .with_mode(Mode::_0);
+
+    #[cfg(soc_clock_node_spi_function_clock_is_configurable)]
+    let config = config.with_clock_source(ClockSource::Xtal);
+
+    config
 }
 
 #[cfg(all(spi_master_supports_dma, feature = "unstable"))]
@@ -378,6 +395,20 @@ mod tests {
     }
 
     #[test]
+    fn max_output_frequency_is_attainable_by_default(mut ctx: Context) {
+        let max_mhz = cfg_select! {
+            any(esp32, esp32c2) => 40,
+            esp32h2 => 48, // and H21, H4
+            any(
+                esp32c3, esp32c5, esp32c6, esp32c61, esp32p4, esp32s2, esp32s3, esp32s31
+            ) => 80,
+        };
+        ctx.spi
+            .apply_config(&Config::default().with_frequency(Rate::from_mhz(max_mhz)))
+            .unwrap();
+    }
+
+    #[test]
     fn test_symmetric_transfer(mut ctx: Context) {
         let write = [0xde, 0xad, 0xbe, 0xef];
         let mut read: [u8; 4] = [0x00u8; 4];
@@ -512,8 +543,13 @@ mod tests {
         let mut spi = ctx.spi.into_async();
 
         // Slow down SCLK so that transferring the buffer takes a while.
-        spi.apply_config(&Config::default().with_frequency(Rate::from_khz(80)))
-            .expect("Apply config failed");
+        spi.apply_config(&{
+            let config = Config::default().with_frequency(Rate::from_khz(80));
+            #[cfg(soc_clock_node_spi_function_clock_is_configurable)]
+            let config = config.with_clock_source(ClockSource::Xtal);
+            config
+        })
+        .expect("Apply config failed");
 
         SpiBus::write(&mut spi, &write[..]).expect("Sync write failed");
         SpiBusAsync::write(&mut spi, &write[..])
@@ -997,7 +1033,12 @@ mod tests {
         // enough that we can detect pulses if cancelling the future leaves the
         // transfer running.
         ctx.spi
-            .apply_config(&Config::default().with_frequency(Rate::from_khz(800)))
+            .apply_config(&{
+                let config = Config::default().with_frequency(Rate::from_khz(800));
+                #[cfg(soc_clock_node_spi_function_clock_is_configurable)]
+                let config = config.with_clock_source(ClockSource::Xtal);
+                config
+            })
             .unwrap();
 
         let mut spi = ctx.spi.into_async();
@@ -1041,7 +1082,12 @@ mod tests {
         // This means that without working cancellation, the test case should
         // fail.
         ctx.spi
-            .apply_config(&Config::default().with_frequency(Rate::from_khz(80)))
+            .apply_config(&{
+                let config = Config::default().with_frequency(Rate::from_khz(80));
+                #[cfg(soc_clock_node_spi_function_clock_is_configurable)]
+                let config = config.with_clock_source(ClockSource::Xtal);
+                config
+            })
             .unwrap();
 
         // Set up a large buffer that would trigger a timeout
@@ -1073,7 +1119,12 @@ mod tests {
         // Slow down. At 80kHz, the transfer is supposed to take a bit over 3 seconds.
 
         ctx.spi
-            .apply_config(&Config::default().with_frequency(Rate::from_khz(80)))
+            .apply_config(&{
+                let config = Config::default().with_frequency(Rate::from_khz(80));
+                #[cfg(soc_clock_node_spi_function_clock_is_configurable)]
+                let config = config.with_clock_source(ClockSource::Xtal);
+                config
+            })
             .unwrap();
 
         // Set up a large buffer that would trigger a timeout
@@ -1176,7 +1227,12 @@ mod tests {
         let sclk_counter = set_up_pcnt!(ctx, sclk_input);
 
         ctx.spi
-            .apply_config(&Config::default().with_frequency(Rate::from_khz(80)))
+            .apply_config(&{
+                let config = Config::default().with_frequency(Rate::from_khz(80));
+                #[cfg(soc_clock_node_spi_function_clock_is_configurable)]
+                let config = config.with_clock_source(ClockSource::Xtal);
+                config
+            })
             .unwrap();
 
         // 320 clock cycles
@@ -1261,7 +1317,12 @@ mod tests {
         let sclk_counter = set_up_pcnt!(ctx, sclk_input);
 
         ctx.spi
-            .apply_config(&Config::default().with_frequency(Rate::from_khz(80)))
+            .apply_config(&{
+                let config = Config::default().with_frequency(Rate::from_khz(80));
+                #[cfg(soc_clock_node_spi_function_clock_is_configurable)]
+                let config = config.with_clock_source(ClockSource::Xtal);
+                config
+            })
             .unwrap();
 
         // 32 clock cycles
@@ -1384,6 +1445,10 @@ mod tests {
         check_typical_values(&mut ctx, SpiFunctionClockConfig::PllF120m);
         #[cfg(any(esp32c5, esp32c61))]
         check_typical_values(&mut ctx, SpiFunctionClockConfig::PllF160m);
+        #[cfg(esp32p4)]
+        check_typical_values(&mut ctx, SpiFunctionClockConfig::Spll);
+        #[cfg(esp32s31)]
+        check_typical_values(&mut ctx, SpiFunctionClockConfig::Bbpll);
     }
 }
 
@@ -1391,13 +1456,8 @@ mod tests {
 #[embedded_test::tests(default_timeout = 10)]
 mod psram_dma {
     use esp_hal::{
-        Blocking,
         dma::ExternalBurstConfig,
-        spi::{
-            Mode,
-            master::{Config, Spi, SpiDma},
-        },
-        time::Rate,
+        spi::master::{Spi, SpiDma},
     };
     use hil_test as _;
 
@@ -1423,17 +1483,12 @@ mod psram_dma {
             spi_master_dma_engine = "AXI_GDMA" => peripherals.DMA_AXI_CH0,
         };
 
-        let spi = Spi::new(
-            peripherals.SPI2,
-            Config::default()
-                .with_frequency(Rate::from_khz(100))
-                .with_mode(Mode::_0),
-        )
-        .unwrap()
-        .with_sck(sclk)
-        .with_miso(miso)
-        .with_mosi(mosi)
-        .with_dma(dma_channel);
+        let spi = Spi::new(peripherals.SPI2, half_duplex_config())
+            .unwrap()
+            .with_sck(sclk)
+            .with_miso(miso)
+            .with_mosi(mosi)
+            .with_dma(dma_channel);
 
         Context { spi }
     }
@@ -1504,16 +1559,11 @@ mod half_duplex_write_psram {
         mosi.set_output_enable(true);
         let mosi_loopback = mosi.peripheral_input();
 
-        let spi = Spi::new(
-            peripherals.SPI2,
-            Config::default()
-                .with_frequency(Rate::from_khz(100))
-                .with_mode(Mode::_0),
-        )
-        .unwrap()
-        .with_sck(sclk)
-        .with_sio0(mosi)
-        .with_dma(dma_channel);
+        let spi = Spi::new(peripherals.SPI2, half_duplex_config())
+            .unwrap()
+            .with_sck(sclk)
+            .with_sio0(mosi)
+            .with_dma(dma_channel);
 
         Context {
             spi,
@@ -1607,20 +1657,16 @@ mod half_duplex_write_psram {
     }
 }
 
-#[cfg(spi_slave_driver_supported)]
 #[embedded_test::tests(default_timeout = 3, executor = hil_test::Executor::new())]
 mod read {
-    use esp_hal::{
-        Blocking,
-        gpio::{Level, Output, OutputConfig},
-        spi::{
-            Mode,
-            master::{Address, Command, Config, DataMode, Spi},
-        },
-        time::Rate,
-    };
     #[cfg(spi_master_supports_dma)]
     use esp_hal::{dma_rx_buffer, dma_tx_buffer};
+    use esp_hal::{
+        gpio::{Level, Output, OutputConfig},
+        spi::master::{Address, Command, DataMode, Spi},
+    };
+
+    use super::*;
 
     #[cfg(spi_master_supports_dma)]
     type DmaChannel<'a> = cfg_select! {
@@ -1658,15 +1704,10 @@ mod read {
             spi_master_dma_engine = "AXI_GDMA" => peripherals.DMA_AXI_CH0,
         };
 
-        let spi = Spi::new(
-            peripherals.SPI2,
-            Config::default()
-                .with_frequency(Rate::from_khz(100))
-                .with_mode(Mode::_0),
-        )
-        .unwrap()
-        .with_sck(sclk)
-        .with_miso(miso);
+        let spi = Spi::new(peripherals.SPI2, half_duplex_config())
+            .unwrap()
+            .with_sck(sclk)
+            .with_miso(miso);
 
         Context {
             spi,
@@ -1832,6 +1873,57 @@ mod read {
         assert_eq!(buffer.as_slice(), &[0xFF; DMA_BUFFER_SIZE]);
     }
 
+    /// A DMA transfer must not leave the descriptor link armed.
+    ///
+    /// PDMA chips (ESP32, ESP32-S2) have no DMA enable bit in `dma_conf`: the
+    /// peripheral reads from the descriptors instead of the FIFO for as long as
+    /// a link is armed, so `disable_dma` has to clear them. Without that, the
+    /// CPU-driven transfer that follows a DMA transfer is routed into the
+    /// previous transfer's descriptors: the received data lands in the DMA
+    /// buffer and the CPU reads back the bytes it just wrote into the FIFO.
+    ///
+    /// Note that a plain loopback cannot catch this. There the CPU transfer
+    /// reads back what it wrote whether or not the link is stale, which is why
+    /// this drives MISO to a level of its own and flips it between the two
+    /// transfers. A transfer that is really sampling the pin follows the flip;
+    /// one that is reading a stale FIFO cannot, and echoes `CPU_TX` instead.
+    #[test]
+    #[cfg(spi_master_supports_dma)]
+    fn cpu_transfer_works_after_dma_transfer(mut ctx: Context) {
+        const CPU_LEN: usize = 4;
+        const DMA_LEN: usize = 64;
+        /// Distinct from both mirror levels, so a stale FIFO cannot look like a
+        /// correctly sampled pin.
+        const CPU_TX: [u8; CPU_LEN] = [0xde, 0xad, 0xbe, 0xef];
+
+        // Transfers shorter than this are driven by the CPU.
+        ctx.spi
+            .apply_config(&half_duplex_config().with_min_async_transfer_size(CPU_LEN + 1))
+            .unwrap();
+
+        let mut spi = ctx.spi.with_dma(ctx.dma_channel).with_buffers(
+            dma_rx_buffer!(DMA_LEN).unwrap(),
+            dma_tx_buffer!(DMA_LEN).unwrap(),
+        );
+
+        for (dma_level, cpu_level) in [(Level::Low, Level::High), (Level::High, Level::Low)] {
+            let dma_expected = if dma_level == Level::High { 0xFF } else { 0x00 };
+            let cpu_expected = if cpu_level == Level::High { 0xFF } else { 0x00 };
+
+            // Long enough to go through DMA, which arms the link.
+            ctx.miso_mirror.set_level(dma_level);
+            let mut dma_rx = [0xAA; DMA_LEN];
+            spi.transfer(&mut dma_rx, &[0x00; DMA_LEN]).unwrap();
+            assert_eq!(dma_rx.as_slice(), &[dma_expected; DMA_LEN]);
+
+            // Below the threshold, so this one goes through the FIFO.
+            ctx.miso_mirror.set_level(cpu_level);
+            let mut cpu_rx = [0xAA; CPU_LEN];
+            spi.transfer(&mut cpu_rx, &CPU_TX).unwrap();
+            assert_eq!(cpu_rx.as_slice(), &[cpu_expected; CPU_LEN]);
+        }
+    }
+
     #[test]
     #[cfg(spi_master_supports_dma)]
     fn data_mode_combinations_are_not_rejected(ctx: Context) {
@@ -1887,18 +1979,15 @@ mod read {
 #[cfg(pcnt_driver_supported)]
 #[embedded_test::tests(default_timeout = 3, executor = hil_test::Executor::new())]
 mod write {
-    use esp_hal::{
-        Blocking,
-        gpio::{Flex, interconnect::InputSignal},
-        pcnt::{Pcnt, channel::EdgeMode, unit::Unit},
-        spi::{
-            Mode,
-            master::{Address, Command, Config, DataMode, Spi},
-        },
-        time::Rate,
-    };
     #[cfg(spi_master_supports_dma)]
     use esp_hal::{dma_rx_buffer, dma_tx_buffer};
+    use esp_hal::{
+        gpio::{Flex, interconnect::InputSignal},
+        pcnt::{Pcnt, channel::EdgeMode, unit::Unit},
+        spi::master::{Address, Command, DataMode, Spi},
+    };
+
+    use super::*;
 
     #[cfg(spi_master_supports_dma)]
     type DmaChannel<'a> = cfg_select! {
@@ -1950,16 +2039,11 @@ mod write {
         cs.set_output_enable(true);
         let cs_loopback = cs.peripheral_input();
 
-        let spi = Spi::new(
-            peripherals.SPI2,
-            Config::default()
-                .with_frequency(Rate::from_khz(100))
-                .with_mode(Mode::_0),
-        )
-        .unwrap()
-        .with_sck(sclk)
-        .with_sio0(mosi)
-        .with_cs(cs);
+        let spi = Spi::new(peripherals.SPI2, half_duplex_config())
+            .unwrap()
+            .with_sck(sclk)
+            .with_sio0(mosi)
+            .with_cs(cs);
 
         Context {
             spi,
@@ -2163,13 +2247,14 @@ mod write {
 #[cfg(any(feature = "unstable", spi_slave_driver_supported))]
 #[cfg(spi_slave_supports_dma)]
 mod spi_slave {
+    #[cfg(spi_slave_supports_dma)]
+    use esp_hal::{dma_rx_buffer, dma_tx_buffer};
     use esp_hal::{
-        Blocking,
         gpio::{Flex, Input, InputConfig, Level, OutputConfig, Pull},
         spi::{Mode, slave::Spi},
     };
-    #[cfg(spi_slave_supports_dma)]
-    use esp_hal::{dma_rx_buffer, dma_tx_buffer};
+
+    use super::*;
 
     #[cfg(spi_slave_supports_dma)]
     type DmaChannel<'a> = cfg_select! {
@@ -2178,6 +2263,9 @@ mod spi_slave {
         },
         spi_slave_dma_engine = "AHB_GDMA" => {
             esp_hal::peripherals::DMA_CH0<'a>
+        },
+        spi_slave_dma_engine = "AXI_GDMA" => {
+            esp_hal::peripherals::DMA_AXI_CH0<'a>
         },
     };
 
@@ -2258,6 +2346,7 @@ mod spi_slave {
         let dma_channel = cfg_select! {
             spi_slave_dma_engine = "SPI_DMA" => peripherals.DMA_SPI2,
             spi_slave_dma_engine = "AHB_GDMA" => peripherals.DMA_CH0,
+            spi_slave_dma_engine = "AXI_GDMA" => peripherals.DMA_AXI_CH0,
         };
 
         let mut mosi_gpio = Flex::new(mosi_pin);
@@ -2342,17 +2431,14 @@ mod qspi_dma {
         peripherals::PCNT,
     };
     use esp_hal::{
-        Blocking,
         dma::{DmaRxBuf, DmaTxBuf},
         dma_rx_buffer,
         dma_tx_buffer,
         gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pull},
-        spi::{
-            Mode,
-            master::{Address, Command, Config, DataMode, Spi, SpiDma},
-        },
-        time::Rate,
+        spi::master::{Address, Command, Config, DataMode, Spi, SpiDma},
     };
+
+    use super::*;
 
     type DmaChannel0<'a> = cfg_select! {
         spi_master_dma_engine = "SPI_DMA" => {
@@ -2704,13 +2790,7 @@ mod qspi_dma {
             spi_master_dma_engine = "AXI_GDMA" => peripherals.DMA_AXI_CH0,
         };
 
-        let spi = Spi::new(
-            peripherals.SPI2,
-            Config::default()
-                .with_frequency(Rate::from_khz(100))
-                .with_mode(Mode::_0),
-        )
-        .unwrap();
+        let spi = Spi::new(peripherals.SPI2, half_duplex_config()).unwrap();
 
         Context {
             spi,

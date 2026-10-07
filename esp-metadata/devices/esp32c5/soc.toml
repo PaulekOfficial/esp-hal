@@ -128,9 +128,12 @@ peripherals = [
     { name = "FLASH", virtual = true },
     { name = "GPIO_DEDICATED", virtual = true },
     { name = "LP_CORE", virtual = true },
-    { name = "SW_INTERRUPT", virtual = true },
     { name = "WIFI", virtual = true, interrupts = { bb = "WIFI_BB", mac = "WIFI_MAC", pwr = "WIFI_PWR" }, stable = true },
     { name = "PSRAM", virtual = true },
+    { name = "FROM_CPU_INTR0", virtual = true },
+    { name = "FROM_CPU_INTR1", virtual = true },
+    { name = "FROM_CPU_INTR2", virtual = true },
+    { name = "FROM_CPU_INTR3", virtual = true },
 ]
 
 [device.soc.clocks]
@@ -162,7 +165,7 @@ engines = [
         name = "AHB_GDMA",
         max_priority = 5,
         burst_sizes = [4, 16, 32],
-        drivers = ["aes", "sha", "spi_master", "uhci", "i2s", "parl_io"],
+        drivers = ["aes", "sha", "spi_master", "spi_slave", "uhci", "i2s", "parl_io"],
         peripheral_instances = [
             { name = "SPI2", dma_id = 1 },
             { name = "UHCI0", dma_id = 2 },
@@ -348,7 +351,7 @@ support_status = { status = "not_supported", issue = 5155 }
 ram_size = 32
 
 [device.lp_i2c_master]
-support_status = "not_supported"
+support_status = "partial"
 version = "lp_i2c"
 fifo_size = 16
 

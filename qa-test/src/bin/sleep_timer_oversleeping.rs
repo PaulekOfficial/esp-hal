@@ -42,12 +42,11 @@ async fn main(_spawner: Spawner) {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 65536);
+    esp_alloc::heap_allocator!(size: 32768);
+    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 32768);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let sw_interrupt =
-        esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     let rtc = Rtc::new(peripherals.RTC_TIMER);
     let mut lpwr = LowPower::new(peripherals.LPWR);

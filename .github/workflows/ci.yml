@@ -37,9 +37,13 @@ jobs:
   # jobs and reusable workflows run.  Every other job/workflow in this file
   # gates on `calculate` outputs.
   # Draft PRs run no CI at all: every other job needs `calculate`, so skipping
-  # it skips them too.
+  # it skips them too. Closed and merged PRs are skipped the same way, since
+  # label events fire on them as well.
   calculate:
-    if: ${{ !github.event.pull_request.draft }}
+    if: >
+      !github.event.pull_request.draft &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.state != 'closed')
     runs-on: ubuntu-latest
     outputs:
       labels: ${{ steps.labels.outputs.labels }}
@@ -460,7 +464,7 @@ jobs:
     secrets: inherit
 
   # --------------------------------------------------------------------------
-  # HIL — hil-build gates compilation; hil-gate gates device runs (≥50% rule).
+  # HIL — build jobs gate artifacts; hil-gate gates device runs (≥50% rule).
 
   hil-build:
     needs: calculate
@@ -548,9 +552,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Cache Dependencies
+        uses: Swatinem/rust-cache@v2
+
       # xtask runs on the AArch64 HIL runners as a host tool.
-      # Cache the cross-compiled binary, it rarely changes so this avoids the
-      # expensive cross build.
+      # Restore the binary after the dependency cache, which may replace the
+      # target directory while restoring its own cache.
       - name: Cache xtask binary
         id: xtask-cache
         uses: actions/cache@v6
@@ -567,9 +574,6 @@ jobs:
         with:
           tool: cross
 
-      - name: Cache Dependencies
-        uses: Swatinem/rust-cache@v2
-
       - name: Build xtask for HIL runners
         if: steps.xtask-cache.outputs.cache-hit != 'true'
         run: cross build --release --target aarch64-unknown-linux-gnu -p esp-devtool
@@ -578,6 +582,7 @@ jobs:
         with:
           name: xtask-aarch64
           path: target/aarch64-unknown-linux-gnu/release/esp-devtool
+          if-no-files-found: error
 
   # Device runs — aggregated by hil-gate (see below).
   hil-run:
@@ -736,8 +741,9 @@ jobs:
   # Skipped jobs (due to calculate outputs) are treated as success.
   # Failed or cancelled jobs cause this gate to fail.
   #
-  # hil-build gates test compilation.  hil-gate gates device runs when ≥50% of
-  # executed hil-run matrix legs fail.  hil-run-radio is informational only.
+  # hil-build gates test compilation, and hil-devtool gates the runner tool.
+  # hil-gate gates device runs when ≥50% of executed hil-run matrix legs fail.
+  # hil-run-radio is informational only.
   ci-result:
     if: ${{ always() }}
     needs:
@@ -748,6 +754,7 @@ jobs:
       - changelog
       - semver-check
       - hil-build
+      - hil-devtool
       - hil-gate
     runs-on: ubuntu-latest
     steps:

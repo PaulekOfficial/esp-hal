@@ -35,15 +35,15 @@ define_clock_tree_types!();
 #[non_exhaustive]
 pub enum CpuClock {
     /// 400 MHz CPU clock (eco5 / v3.x maximum)
-    /// CPLL -> CPU_ROOT -> CPU/1, APB divider /4 = 100MHz
+    /// CPLL -> CPU_ROOT -> CPU/1, APB divider /4 = 100 MHz
     _400MHz = 400,
 
     /// 200 MHz CPU clock (low power)
-    /// CPLL -> CPU_ROOT -> CPU/2, APB /2 = 100MHz
+    /// CPLL -> CPU_ROOT -> CPU/2, APB /2 = 100 MHz
     _200MHz = 200,
 
     /// 100 MHz CPU clock (ultra low power)
-    /// CPLL -> CPU_ROOT -> CPU/4, APB /1 = 100MHz
+    /// CPLL -> CPU_ROOT -> CPU/4, APB /1 = 100 MHz
     #[default]
     _100MHz = 100,
 }
@@ -53,13 +53,15 @@ impl CpuClock {
     const PRESET_400: ClockConfig = ClockConfig {
         cpu_root_clk: Some(CpuRootClkConfig::Cpll),
         cpll_clk: Some(CpllClkConfig::_400),
-        spll_clk: Some(SpllClkConfig::_480),
         mpll_clk: Some(MpllClkConfig::_500),
         cpu_clk: Some(CpuClkConfig::new(0)), // /1 = 400 MHz
         mem_clk: Some(MemClkConfig::new(1)), // /2 = 200 MHz
         sys_clk: Some(SysClkConfig::new(0)), // /1 = 200 MHz
         apb_clk: Some(ApbClkConfig::new(1)), // /2 = 100 MHz
-        iomux_function_clock: Some(IomuxFunctionClockConfig::PllF80m),
+        iomux_function_clock: Some(IomuxFunctionClockConfig::new(
+            IomuxFunctionClockSource::PllF80m,
+            0,
+        )),
         lp_fast_clk: Some(LpFastClkConfig::RcFast),
         lp_slow_clk: Some(LpSlowClkConfig::RcSlow),
         timg_calibration_clock: None,
@@ -70,13 +72,15 @@ impl CpuClock {
     const PRESET_200: ClockConfig = ClockConfig {
         cpu_root_clk: Some(CpuRootClkConfig::Cpll),
         cpll_clk: Some(CpllClkConfig::_400),
-        spll_clk: Some(SpllClkConfig::_480),
         mpll_clk: Some(MpllClkConfig::_500),
         cpu_clk: Some(CpuClkConfig::new(1)), // /2 = 200 MHz
         mem_clk: Some(MemClkConfig::new(0)), // /1 = 200 MHz
         sys_clk: Some(SysClkConfig::new(0)), // /1 = 200 MHz
         apb_clk: Some(ApbClkConfig::new(1)), // /2 = 100 MHz
-        iomux_function_clock: Some(IomuxFunctionClockConfig::PllF80m),
+        iomux_function_clock: Some(IomuxFunctionClockConfig::new(
+            IomuxFunctionClockSource::PllF80m,
+            0,
+        )),
         lp_fast_clk: Some(LpFastClkConfig::RcFast),
         lp_slow_clk: Some(LpSlowClkConfig::RcSlow),
         timg_calibration_clock: None,
@@ -85,13 +89,15 @@ impl CpuClock {
     const PRESET_100: ClockConfig = ClockConfig {
         cpu_root_clk: Some(CpuRootClkConfig::Cpll),
         cpll_clk: Some(CpllClkConfig::_400),
-        spll_clk: Some(SpllClkConfig::_480),
         mpll_clk: Some(MpllClkConfig::_500),
         cpu_clk: Some(CpuClkConfig::new(3)), // /4 = 100 MHz
         mem_clk: Some(MemClkConfig::new(0)), // /1 = 100 MHz
         sys_clk: Some(SysClkConfig::new(0)), // /1 = 100 MHz
         apb_clk: Some(ApbClkConfig::new(0)), // /1 = 100 MHz
-        iomux_function_clock: Some(IomuxFunctionClockConfig::PllF80m),
+        iomux_function_clock: Some(IomuxFunctionClockConfig::new(
+            IomuxFunctionClockSource::PllF80m,
+            0,
+        )),
         lp_fast_clk: Some(LpFastClkConfig::RcFast),
         lp_slow_clk: Some(LpSlowClkConfig::RcSlow),
         timg_calibration_clock: None,
@@ -148,6 +154,13 @@ fn configure_cpll_clk_impl(
     _old_config: Option<CpllClkConfig>,
     new_config: CpllClkConfig,
 ) {
+    // Calibration starts before the analog configuration is written, and stops
+    // after the PLL reports that calibration ended.
+    // Ref: IDF rtc_clk_cpll_configure (esp32p4).
+    HP_SYS_CLKRST::regs()
+        .ana_pll_ctrl0()
+        .modify(|_, w| w.cpu_pll_cal_stop().clear_bit());
+
     // div7_0 = (freq_mhz / 40) - 1
     let div7_0: u8 = match new_config {
         CpllClkConfig::_360 => 9,
@@ -161,10 +174,6 @@ fn configure_cpll_clk_impl(
     regi2c::I2C_CPLL_OC_DIV_7_0.write_reg(div7_0);
     regi2c::I2C_CPLL_OC_DCUR.write_reg(dcur);
 
-    HP_SYS_CLKRST::regs()
-        .ana_pll_ctrl0()
-        .modify(|_, w| w.cpu_pll_cal_stop().clear_bit());
-
     // Wait for calibration to complete
     while !HP_SYS_CLKRST::regs()
         .ana_pll_ctrl0()
@@ -175,60 +184,18 @@ fn configure_cpll_clk_impl(
         core::hint::spin_loop();
     }
 
-    // Stop calibration: set cpu_pll_cal_stop = 1
+    // Wait for true stop
+    crate::rom::ets_delay_us(10);
+
     HP_SYS_CLKRST::regs()
         .ana_pll_ctrl0()
         .modify(|_, w| w.cpu_pll_cal_stop().set_bit());
-
-    // Small delay for PLL to stabilize
-    crate::rom::ets_delay_us(10);
 }
 
 // SPLL_CLK
 
 fn enable_spll_clk_impl(_clocks: &mut ClockTree, _en: bool) {
     // PLLs are always on, for now
-}
-
-fn configure_spll_clk_impl(
-    _clocks: &mut ClockTree,
-    _old_config: Option<SpllClkConfig>,
-    new_config: SpllClkConfig,
-) {
-    // div7_0 = (freq_mhz / 40) - 1
-    let div7_0: u8 = match new_config {
-        SpllClkConfig::_480 => 11,
-        SpllClkConfig::_240 => 5,
-    };
-
-    // Same OC_REF_DIV and OC_DCUR values as CPLL
-    let lref: u8 = 0x50; // dchgp=5, div_ref=0, oc_enb_fcal=0
-    let dcur: u8 = 0x73; // dlref_sel=1, dhref_sel=3, dcur=3
-
-    regi2c::I2C_SPLL_OC_REF_DIV.write_reg(lref);
-    regi2c::I2C_SPLL_OC_DIV_7_0.write_reg(div7_0);
-    regi2c::I2C_SPLL_OC_DCUR.write_reg(dcur);
-
-    // Run SPLL calibration
-    //      HP_SYS_CLKRST.ana_pll_ctrl0.sys_pll_cal_stop
-    HP_SYS_CLKRST::regs()
-        .ana_pll_ctrl0()
-        .modify(|_, w| w.sys_pll_cal_stop().clear_bit());
-
-    while !HP_SYS_CLKRST::regs()
-        .ana_pll_ctrl0()
-        .read()
-        .sys_pll_cal_end()
-        .bit_is_set()
-    {
-        core::hint::spin_loop();
-    }
-
-    HP_SYS_CLKRST::regs()
-        .ana_pll_ctrl0()
-        .modify(|_, w| w.sys_pll_cal_stop().set_bit());
-
-    crate::rom::ets_delay_us(10);
 }
 
 // MPLL_CLK
@@ -242,6 +209,13 @@ fn enable_mpll_clk_impl(clocks: &mut ClockTree, en: bool) {
     if !en {
         return;
     }
+
+    // Calibration starts before the analog configuration is written, and stops
+    // after the PLL reports that calibration ended.
+    // Ref: IDF clk_ll_mpll_set_config_v1 (esp32p4).
+    HP_SYS_CLKRST::regs()
+        .ana_pll_ctrl0()
+        .modify(|_, w| w.mspi_cal_stop().clear_bit());
 
     regi2c::I2C_MPLL_DHREF_DHREF.write_field(3);
 
@@ -258,10 +232,6 @@ fn enable_mpll_clk_impl(clocks: &mut ClockTree, en: bool) {
     };
     let div_val: u8 = (div << 3) | ref_div;
     regi2c::I2C_MPLL_DIV_REG_ADDR.write_reg(div_val);
-
-    HP_SYS_CLKRST::regs()
-        .ana_pll_ctrl0()
-        .modify(|_, w| w.mspi_cal_stop().clear_bit());
 
     while HP_SYS_CLKRST::regs()
         .ana_pll_ctrl0()
@@ -421,10 +391,6 @@ fn configure_apb_clk_impl(
 
 // IOMUX_FUNCTION_CLOCK
 
-fn enable_iomux_function_clock_impl(_clocks: &mut ClockTree, _en: bool) {
-    // The IO MUX gate is owned by the always-enabled IOMUX peripheral clock.
-}
-
 fn configure_iomux_function_clock_impl(
     _clocks: &mut ClockTree,
     _old_config: Option<IomuxFunctionClockConfig>,
@@ -432,9 +398,12 @@ fn configure_iomux_function_clock_impl(
 ) {
     HP_SYS_CLKRST::regs()
         .peri_clk_ctrl26()
-        .modify(|_, w| match new_config {
-            IomuxFunctionClockConfig::XtalClk => w.iomux_clk_src_sel().clear_bit(),
-            IomuxFunctionClockConfig::PllF80m => w.iomux_clk_src_sel().set_bit(),
+        .modify(|_, w| unsafe {
+            w.iomux_clk_src_sel().bit(matches!(
+                new_config.source,
+                IomuxFunctionClockSource::PllF80m
+            ));
+            w.iomux_clk_div_num().bits(new_config.div_num as u8)
         });
 }
 
@@ -465,6 +434,7 @@ fn configure_lp_slow_clk_impl(
         .modify(|_, w| unsafe {
             w.lp_aonclkrst_slow_clk_sel().bits(match new_selector {
                 LpSlowClkConfig::RcSlow => 0,
+                #[cfg(use_xtal32k)]
                 LpSlowClkConfig::Xtal32k => 1,
                 // LpSlowClkConfig::Rc32k => 2,
                 LpSlowClkConfig::OscSlow => 3,
@@ -481,15 +451,6 @@ impl SdmInstance {
         crate::peripherals::GPIO_SD::regs()
             .sigmadelta_misc()
             .modify(|_, w| w.function_clk_en().bit(en));
-    }
-
-    fn configure_function_clock_impl(
-        self,
-        _clocks: &mut ClockTree,
-        _old_config: Option<SdmFunctionClockConfig>,
-        _new_config: SdmFunctionClockConfig,
-    ) {
-        // Nothing to do.
     }
 }
 impl TimgInstance {
@@ -519,6 +480,34 @@ impl TimgInstance {
     }
 }
 
+impl RmtInstance {
+    // RMT_SCLK
+
+    fn enable_sclk_impl(self, _clocks: &mut ClockTree, en: bool) {
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl22()
+            .modify(|_, w| w.rmt_clk_en().bit(en));
+    }
+
+    fn configure_sclk_impl(
+        self,
+        _clocks: &mut ClockTree,
+        _old_config: Option<RmtSclkConfig>,
+        new_config: RmtSclkConfig,
+    ) {
+        // Register values: 0 = XTAL, 1 = RC_FAST, 2 = PLL_F80M.
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl22()
+            .modify(|_, w| unsafe {
+                w.rmt_clk_src_sel().bits(match new_config {
+                    RmtSclkConfig::XtalClk => 0,
+                    RmtSclkConfig::RcFastClk => 1,
+                    RmtSclkConfig::PllF80m => 2,
+                })
+            });
+    }
+}
+
 // System clock impl functions
 
 // Mux enable stubs (mux nodes need enable functions too)
@@ -528,6 +517,7 @@ fn enable_lp_slow_clk_impl(_clocks: &mut ClockTree, _en: bool) {}
 
 // Source clock enable/disable stubs (PLLs, oscillators)
 fn enable_rc_fast_clk_impl(_clocks: &mut ClockTree, _en: bool) {}
+#[cfg(use_xtal32k)]
 fn enable_xtal32k_clk_impl(_clocks: &mut ClockTree, _en: bool) {}
 fn enable_osc_slow_clk_impl(_clocks: &mut ClockTree, _en: bool) {}
 fn enable_rc_slow_clk_impl(_clocks: &mut ClockTree, _en: bool) {}
@@ -540,6 +530,7 @@ fn enable_pll_f240m_impl(_clocks: &mut ClockTree, _en: bool) {}
 fn enable_pll_f25m_impl(_clocks: &mut ClockTree, _en: bool) {}
 fn enable_pll_f50m_impl(_clocks: &mut ClockTree, _en: bool) {}
 fn enable_xtal_d2_clk_impl(_clocks: &mut ClockTree, _en: bool) {}
+fn enable_spll_d3_clock_impl(_clocks: &mut ClockTree, _en: bool) {}
 
 // TIMG_CALIBRATION_CLOCK
 
@@ -650,7 +641,37 @@ fn configure_timg_calibration_clock_impl(
                 TimgCalibrationClockConfig::CpllClk => 2,
                 TimgCalibrationClockConfig::RcFastDivClk => 7,
                 TimgCalibrationClockConfig::RcSlowClk => 8,
+                #[cfg(use_xtal32k)]
                 TimgCalibrationClockConfig::Xtal32kClk => 10,
             })
         });
+}
+
+impl PsramInstance {
+    // PSRAM_FUNCTION_CLOCK
+
+    fn enable_function_clock_impl(self, _clocks: &mut ClockTree, en: bool) {
+        HP_SYS_CLKRST::regs().peri_clk_ctrl00().modify(|_, w| {
+            w.psram_pll_clk_en().bit(en);
+            w.psram_core_clk_en().bit(en)
+        });
+    }
+
+    fn configure_function_clock_impl(
+        self,
+        _clocks: &mut ClockTree,
+        _old_config: Option<PsramFunctionClockConfig>,
+        new_config: PsramFunctionClockConfig,
+    ) {
+        HP_SYS_CLKRST::regs()
+            .peri_clk_ctrl00()
+            .modify(|_, w| unsafe {
+                w.psram_clk_src_sel().bits(match new_config {
+                    PsramFunctionClockConfig::Xtal => 0,
+                    PsramFunctionClockConfig::Mpll => 1,
+                    PsramFunctionClockConfig::Spll => 2,
+                    PsramFunctionClockConfig::Cpll => 3,
+                })
+            });
+    }
 }

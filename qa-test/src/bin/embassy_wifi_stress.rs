@@ -9,8 +9,6 @@
 
 extern crate alloc;
 
-use alloc::string::ToString;
-
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer, WithTimeout};
 use esp_backtrace as _;
@@ -18,12 +16,13 @@ use esp_hal::{
     Config as EspConfig,
     clock::CpuClock,
     init as initialize_esp_hal,
-    interrupt::software::SoftwareInterruptControl,
     ram,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
 use esp_radio::wifi::{
+    AuthenticationMethod,
+    AuthenticationMethodConfig,
     Config,
     scan::{ScanConfig, ScanTypeConfig},
     sta::StationConfig,
@@ -42,9 +41,8 @@ async fn main(_spawner: Spawner) {
     // only have one memory region to make it easier to spot leaks
     esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64 * 1024);
 
-    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     let mut i = 0;
     loop {
@@ -66,13 +64,12 @@ async fn main(_spawner: Spawner) {
 
         {
             println!("Connecting to WiFi SSID: {}", SSID);
-            let scan_config =
-                ScanConfig::default()
-                    .with_ssid(SSID)
-                    .with_scan_type(ScanTypeConfig::Active {
-                        min: esp_hal::time::Duration::from_millis(50),
-                        max: esp_hal::time::Duration::from_millis(200),
-                    });
+            let scan_config = ScanConfig::default()
+                .with_ssid(SSID.try_into().unwrap())
+                .with_scan_type(ScanTypeConfig::Active {
+                    min: esp_hal::time::Duration::from_millis(50),
+                    max: esp_hal::time::Duration::from_millis(200),
+                });
             println!("Scanning for WiFi networks");
             let aps = controller
                 .scan_async(&scan_config)
@@ -98,10 +95,28 @@ async fn main(_spawner: Spawner) {
 
             let station_config = Config::Station(
                 StationConfig::default()
-                    .with_ssid(best_one.ssid.clone())
+                    .with_ssid(best_one.ssid)
                     .with_bssid(best_one.bssid)
-                    .with_auth_method(best_one.auth_method.unwrap())
-                    .with_password(PASSWORD.to_string())
+                    .with_authentication(match best_one.auth_method {
+                        Some(AuthenticationMethod::Wpa) => {
+                            AuthenticationMethodConfig::Wpa(PASSWORD.try_into().unwrap())
+                        }
+                        Some(AuthenticationMethod::Wpa2Personal) => {
+                            AuthenticationMethodConfig::Wpa2Personal(PASSWORD.try_into().unwrap())
+                        }
+                        Some(AuthenticationMethod::WpaWpa2Personal) => {
+                            AuthenticationMethodConfig::WpaWpa2Personal(
+                                PASSWORD.try_into().unwrap(),
+                            )
+                        }
+                        Some(AuthenticationMethod::None) => AuthenticationMethodConfig::Open,
+                        _ => {
+                            panic!(
+                                "Unsupported authentication method: {:?}",
+                                best_one.auth_method
+                            );
+                        }
+                    })
                     .with_channel(best_one.channel),
             );
             controller.set_config(&station_config).unwrap();

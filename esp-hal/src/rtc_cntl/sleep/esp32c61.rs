@@ -8,7 +8,10 @@ use crate::{
         rtc::{HpAnalog, HpSysCntlReg, HpSysPower, LpAnalog, LpSysPower},
         sleep::{SleepKind, pmu_common::SleepTimeConfig},
     },
-    soc::clocks::{self, ClockTree, HpRootClkConfig, LpSlowClkConfig},
+    soc::{
+        clocks::{self, ClockTree, HpRootClkConfig},
+        xtal32k,
+    },
 };
 
 /// Configuration for controlling the behavior during sleep modes.
@@ -236,7 +239,9 @@ impl PowerSleepConfig {
 
         self.hp_sys.xtal.set_xpd_xtal(pd_flags.pd_xtal().not());
 
-        self.lp_sys_active.clk_power.set_xpd_xtal32k(true);
+        self.lp_sys_active
+            .clk_power
+            .set_xpd_xtal32k(xtal32k::use_xtal32k());
         self.lp_sys_active.clk_power.set_xpd_rc32k(true);
         self.lp_sys_active.clk_power.set_xpd_fosc(true);
 
@@ -592,7 +597,7 @@ impl SleepTimeConfig {
 pub struct RtcSleepConfig {
     /// Deep Sleep flag
     pub deep: bool,
-    /// Power Down flags
+    /// Powers Down flags.
     pub pd_flags: PowerDownFlags,
 }
 
@@ -610,7 +615,7 @@ impl Default for RtcSleepConfig {
 
 bitfield::bitfield! {
     #[derive(Clone, Copy)]
-    /// Power domains to be powered down during sleep
+    /// Power domains to be powered down during sleep.
     pub struct PowerDownFlags(u32);
 
     /// Controls the power-down status of the top power domain.
@@ -637,16 +642,16 @@ bitfield::bitfield! {
     pub u32, pd_xtal     , set_pd_xtal     : 10;
     /// Controls the power-down status of the fast RC oscillator.
     pub u32, pd_rc_fast  , set_pd_rc_fast  : 11;
-    /// Controls the power-down status of the 32kHz crystal oscillator.
+    /// Controls the power-down status of the 32 kHz crystal oscillator.
     pub u32, pd_xtal32k  , set_pd_xtal32k  : 12;
-    /// Controls the power-down status of the 32kHz RC oscillator.
+    /// Controls the power-down status of the 32 kHz RC oscillator.
     pub u32, pd_rc32k    , set_pd_rc32k    : 13;
     /// Controls the power-down status of the low-power peripheral domain.
     pub u32, pd_lp_periph, set_pd_lp_periph: 14;
 }
 
 impl PowerDownFlags {
-    /// Checks whether all memory groups (G0, G1, G2, G3) are powered down.
+    /// Returns whether all memory groups (G0, G1, G2, G3) are powered down.
     pub fn pd_mem(self) -> bool {
         self.pd_mem_g0() && self.pd_mem_g1() && self.pd_mem_g2() && self.pd_mem_g3()
     }
@@ -726,12 +731,15 @@ impl RtcSleepConfig {
 
     /// Finalize power-down flags, apply configuration based on the flags.
     pub(crate) fn apply(&mut self) {
-        let lp_slow_uses_xtal32k = ClockTree::with(|clocks| {
-            matches!(
-                clocks::lp_slow_clk_config(clocks),
-                Some(LpSlowClkConfig::Xtal32k)
-            )
-        });
+        let lp_slow_uses_xtal32k = cfg_select! {
+            use_xtal32k => ClockTree::with(|clocks| {
+                matches!(
+                    clocks::lp_slow_clk_config(clocks),
+                    Some(clocks::LpSlowClkConfig::Xtal32k)
+                )
+            }),
+            _ => false,
+        };
 
         if self.deep {
             // force-disable certain power domains
@@ -853,7 +861,7 @@ impl RtcSleepConfig {
         restore_clock_config
     }
 
-    /// Cleans up after sleep
+    /// Cleans up after sleep.
     pub(crate) fn finish_sleep(&self) {
         // like esp-idf pmu_sleep_finish()
         // In "pd_cpu lightsleep" and "deepsleep" modes we never get here

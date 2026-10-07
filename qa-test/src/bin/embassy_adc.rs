@@ -1,20 +1,24 @@
 //! This shows how to asynchronously read ADC data
 //!
 //! PINS
-//! GPIO4 for ADC1
+//! GPIO4 for ADC1, GPIO43 on the ESP32-S31, GPIO20 on the ESP32-P4
 //! ONLY ESP32-C3: GPIO5 for ADC2
+//!
+//! Note that the S31 ADC is differential with a maximum raw value of 4393,
+//! so measuring GND will return about 2198.
 
-//% CHIP_FILTER: adc_driver_supported && !esp32 && !esp32s2 && !esp32s3
+//% CHIP_FILTER: adc_driver_supported && !esp32
 
 #![no_std]
 #![no_main]
 
 use embassy_executor::Spawner;
 use esp_backtrace as _;
+#[cfg(not(feature = "esp32s31"))]
+use esp_hal::analog::adc::AdcCalLine;
 use esp_hal::{
-    analog::adc::{Adc, AdcCalBasic, AdcConfig, Attenuation},
+    analog::adc::{Adc, AdcConfig, Attenuation},
     delay::Delay,
-    interrupt::software::SoftwareInterruptControl,
     timer::timg::TimerGroup,
 };
 use esp_println::println;
@@ -25,17 +29,27 @@ esp_bootloader_esp_idf::esp_app_desc!();
 async fn main(_spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     let mut adc1_config = AdcConfig::new();
-    let analog_pin1 = peripherals.GPIO4;
-    let mut pin1 = adc1_config
-        .enable_pin_with_cal::<_, AdcCalBasic<esp_hal::peripherals::ADC1<'static>>>(
-            analog_pin1,
-            Attenuation::_11dB,
-        );
+
+    let adc1_pin = cfg_select! {
+        feature = "esp32s31" => peripherals.GPIO43,
+        feature = "esp32p4" => peripherals.GPIO20,
+        _ => peripherals.GPIO4,
+    };
+
+    // The ESP32-S31 has no calibration scheme implemented.
+    let mut pin1 = cfg_select! {
+        feature = "esp32s31" => adc1_config.enable_pin(adc1_pin, Attenuation::_11dB),
+        _ => adc1_config
+            .enable_pin_with_cal::<_, AdcCalLine<esp_hal::peripherals::ADC1<'static>>>(
+                adc1_pin,
+                Attenuation::_11dB,
+            ),
+    };
+
     let mut adc1 = Adc::new(peripherals.ADC1, adc1_config).into_async();
 
     cfg_select! {

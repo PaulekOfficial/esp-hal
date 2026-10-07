@@ -20,13 +20,15 @@ use embassy_net::{
     tcp::TcpSocket,
 };
 use embassy_time::{Duration, Timer};
-use esp_hal::{
-    clock::CpuClock,
-    interrupt::software::SoftwareInterruptControl,
-    rng::Rng,
-    timer::timg::TimerGroup,
+use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup};
+use esp_radio::wifi::{
+    AuthenticationMethodConfig,
+    Config,
+    ControllerConfig,
+    Interface,
+    WifiController,
+    ap::AccessPointConfig,
 };
-use esp_radio::wifi::{Config, ControllerConfig, Interface, WifiController, ap::AccessPointConfig};
 use hil_test as _;
 use hil_test::mk_static;
 use semihosting as _;
@@ -55,13 +57,12 @@ async fn main(spawner: Spawner) -> ! {
     let p = esp_hal::init(config);
 
     let timg0 = TimerGroup::new(p.TIMG0);
-    let sw_ints = SoftwareInterruptControl::new(p.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, sw_ints.software_interrupt0);
+    esp_rtos::start(timg0.timer0, p.FROM_CPU_INTR0);
 
     let access_point_config = Config::AccessPoint(
         AccessPointConfig::default()
-            .with_ssid("AP")
-            .with_auth_method(esp_radio::wifi::AuthenticationMethod::None),
+            .with_ssid("AP".try_into().unwrap())
+            .with_authentication(AuthenticationMethodConfig::Open),
     );
 
     let device = esp_radio::wifi::Interface::access_point();

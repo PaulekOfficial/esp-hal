@@ -81,7 +81,7 @@ impl GpioBank {
     ///
     /// The same bits also give the pins that can end a light sleep, because one write sets the
     /// interrupt enable and the wakeup enable of a pad. Sleep entry reads these bits, and thus
-    /// needs no register read for each pin.
+    /// needs no register read for each pin. The default interrupt handler clears only `int_ena`.
     pub(crate) fn listening(self) -> &'static AtomicU32 {
         static FLAGS: PadMask = PadMask::new();
 
@@ -198,7 +198,7 @@ pub(crate) fn bank(_gpio_num: u8) -> GpioBank {
     GpioBank::_0
 }
 
-/// Set GPIO event listening.
+/// Sets GPIO event listening.
 ///
 /// - `gpio_num`: the pin to configure
 /// - `int_ena`: maskable and non-maskable CPU interrupt bits. None to leave unchanged.
@@ -227,6 +227,14 @@ pub(crate) fn set_int_enable(
     } else {
         bank.listening().fetch_and(!pin, Ordering::Relaxed);
     }
+}
+
+/// Clears the CPU interrupt enable of a pad, and keeps its wake condition.
+#[cfg(feature = "rt")]
+pub(crate) fn disable_cpu_interrupt(gpio_num: u8) {
+    GPIO::regs()
+        .pin(gpio_num as usize)
+        .modify(|_, w| unsafe { w.int_ena().bits(0) });
 }
 
 pub(crate) fn is_int_enabled(gpio_num: u8) -> bool {
